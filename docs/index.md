@@ -43,6 +43,6 @@ evoagent run "Hello" --mock
 
 ## Links
 
-- [GitHub](https://github.com/evoagent/evoagent)
+- [GitHub](https://github.com/mingbo-yang/EvoAgent)
 - [Changelog](../CHANGELOG.md)
 - [Contributing](../CONTRIBUTING.md)

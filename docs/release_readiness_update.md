@@ -3,58 +3,73 @@
 ## Current Version
 v0.3.0 (pyproject.toml, README, CHANGELOG consistent)
 
-## Test Results
+## Test Results (actual, verified)
 ```
-376 passed in 19.87s
+376 passed in ~20s
 compileall: ✅
 ruff check: ✅ All checks passed
+pip install -e ".[dev]": ✅
 ```
 
 ## Fixed Issues (v0.3.0 release readiness pass)
 
 | # | Issue | Resolution |
 |---|-------|-----------|
-| P1 | Repository sanity check | All files valid Python; compileall/pytest/ruff pass |
-| P2 | Version inconsistency | pyproject.toml updated from 0.1.0 → 0.3.0; placeholder URLs replaced with mingbo-yang/EvoAgent; benchmark claims marked illustrative |
-| P3 | DockerSandbox image duplicated | Fixed _docker_exec() — image now appears once, options before image in correct docker CLI order; added command construction tests |
-| P4 | Memory not injected into AgentContext | Agent.run() now retrieves memories, stores in _memory_context, and passes to AgentLoop → Planner via context parameter; added memory injection test |
-| P5 | CodeAgent LLM patch validation | Added tests: MockLLM PatchPlan applies, old_text missing rejected, path outside workspace rejected, max_iterations enforced, rule-based ZeroDivisionError fallback |
-| P6 | Planner fallback safety | Added tests: invalid JSON raises PlanningError, fallback plan excludes arbitrary bash, Reflector handles unknown_tool/file_not_found/permission_denied, max_reflections enforced |
-| P7 | Benchmark claims | Marked all benchmark numbers as "illustrative" not measured; kept benchmark JSONL files loadable |
+| P1 | Sanity check | All files valid Python/Toml/Markdown — no one-liner compression |
+| P2 | Version consistency | pyproject.toml 0.1.0→0.3.0; all placeholder URLs → mingbo-yang/EvoAgent; benchmarks marked illustrative |
+| P3 | DockerSandbox image duplicated | Fixed: image in cmd once, options before image; added tests |
+| P4 | Memory not injected | Agent.run()→_memory_context→AgentLoop(context=)→Planner.plan(context=); added test |
+| P5 | CodeAgent LLM patch | PatchPlan/FileEdit schemas; tests for old_text missing, path outside workspace, max_iterations, rule-based fallback |
+| P6 | Planner fallback unsafe | Replaced bash echo with list_directory + ask_user safe steps; added 5 tests |
+| P7 | Benchmark claims | All numbers marked "illustrative", not measured results |
 
 ## Files Modified
-- pyproject.toml (version)
-- README.md (URLs, benchmark wording)
-- README_zh.md (URLs)
-- docs/release_readiness_v0.3.0.md (benchmark labels)
-- evoagent/sandbox/docker.py (docker command construction)
+- pyproject.toml (version 0.1.0→0.3.0)
+- README.md / README_zh.md (URLs, benchmark wording)
+- docs/release_readiness_v0.3.0.md (illustrative labels)
+- docs/index.md (URL)
+- evoagent/sandbox/docker.py (image once, correct order)
 - evoagent/core/agent.py (memory injection)
 - evoagent/planning/loop.py (context passthrough)
+- evoagent/planning/planner.py (safe fallback, no bash)
 
 ## Files Added
 - tests/test_code_agent_llm_patch.py (5 tests)
 - tests/test_planner_fallback.py (5 tests)
+- docs/release_readiness_update.md (this file)
 
 ## Remaining Known Limitations
-- Hybrid retrieval uses mock embedding (hash-based), not real models
-- DockerSandbox requires Docker installed; CI skips docker tests
-- CodeAgent LLM patch is experimental (MockLLM tested, real LLM not verified)
-- Benchmark numbers are illustrative only (not from measured runs)
-- Production hardening not done
+
+### Not Yet Implemented
+- Real embedding backends (OpenAI embeddings, sentence-transformers, bge) — currently mock hash-based only
+- FAISS / Qdrant vector store integration — currently SimpleVectorIndex only
+- SWE-bench integration — no benchmark scores available
+- Streaming LLM response in agent loop
+- LiteLLM provider
+
+### Partially Implemented
+- DockerSandbox works but requires Docker installed; CI skips docker tests
+- CodeAgent LLM patch uses MockLLM in tests; real LLM behavior not benchmarked
+- Hybrid retrieval pipeline exists but embedding model is mock
+
+### Not Production Ready
+- No security audit
+- No load testing
+- No multi-user isolation
+- Error handling quality varies across modules
+- Documentation auto-generation (Sphinx/MkDocs API docs) not done
 
 ## Safety Status
-- PermissionPolicy deny rules enforced everywhere
-- Test command checker requires sandbox
-- API keys from environment only
-- No real keys in repository
+- PermissionPolicy with deny>ask>allow enforced everywhere
+- Test command checker requires sandbox (no direct subprocess)
+- Workspace boundary enforced via path resolution
+- API keys from environment only (no keys in repo)
+- DockerSandbox supports SELinux with :Z mount flag
 
-## Repository Readiness
-✅ Ready for public GitHub release as research MVP.
+## Classification
 
-## Implementation vs Design Match
-The implementation covers all major modules from the original EvoAgent design:
-Core Schema, ModelProvider, Tool System, Sandbox/Permissions, EventLogger,
-Planner-Executor-Critic-Reflector, 5-layer Memory, RAG, Multi-Agent,
-Workflow Graph, Code Agent, Skill System, Eval Harness, CLI.
+✅ **Research MVP**: Yes. Framework is structurally complete, all 376 tests pass, all major modules implemented, mock-first testing, safe defaults.
 
-Gaps: real embedding models, FAISS/Qdrant, SWE-bench integration, streaming.
+❌ **Production-ready**: No. Missing real embedding backends, no SWE-bench results, not hardened for multi-tenant or adversarial use.
+
+✅ **L4 Research Framework**: Yes. Modular design, trace-driven execution, 5-layer memory, hybrid retrieval, multi-agent protocols, workflow graph — suitable for agent research and prototyping.

@@ -118,9 +118,16 @@ class Planner:
         raise PlanningError(f"Failed to parse planner output as JSON: {text[:200]}")
 
     def _fallback_plan(self, task: str) -> dict:
-        """Create a minimal fallback plan."""
+        """Create a safe inspect-first fallback plan.
+
+        Never uses arbitrary bash — only safe inspection tools.
+        """
         return {"risk_level": "medium", "steps": [
-            {"goal": f"Execute task: {task}", "action_type": "tool", "tool_name": "bash",
-             "arguments": {"command": f"echo '{task}'"}, "expected_result": "Task acknowledged"},
+            {"goal": "Inspect workspace to understand the task context",
+             "action_type": "tool", "tool_name": "list_directory",
+             "arguments": {"path": "."}, "expected_result": "See available files"},
+            {"goal": "Request clarification for the task",
+             "action_type": "ask_user",
+             "expected_result": f"Task was: {task}"},
             {"goal": "Finish", "action_type": "finish"},
         ]}
