@@ -32,6 +32,11 @@ def create_prompt_session(mode: str = "default", model_label: str = "deepseek:ch
 
     bindings = KeyBindings()
 
+    @bindings.add("tab")
+    def _tab(event):
+        """Tab: trigger completion."""
+        event.app.current_buffer.complete_next()
+
     @bindings.add("enter")
     def _enter(event):
         """Enter submits the input."""
