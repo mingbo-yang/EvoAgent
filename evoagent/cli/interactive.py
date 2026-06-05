@@ -69,9 +69,14 @@ async def run_interactive():
                 break
             continue
 
-        # Normal message
-        response = await runtime.handle_user_message(user_input)
-        print(f"\n{response}\n")
+        # Normal message — with exception recovery
+        try:
+            response = await runtime.handle_user_message(user_input)
+            print(f"\n{response}\n")
+        except Exception as exc:
+            store.save(session)
+            print(f"\n✗ Turn failed: {exc}")
+            print("Session was preserved. Use /status or retry the request.\n")
         store.save(session)
 
 

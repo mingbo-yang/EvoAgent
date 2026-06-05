@@ -223,6 +223,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
             usage = raw.get("usage", {})
 
+            # DeepSeek reasoning_content
+            reasoning = message.get("reasoning_content") or raw.get("reasoning_content")
+
             return LLMResponse(
                 content=content,
                 model=raw.get("model", self._config.model),
@@ -235,6 +238,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     "total_tokens": usage.get("total_tokens", 0),
                 },
                 finish_reason=finish_reason,
+                reasoning_content=reasoning,
             )
         except Exception as e:
             raise ModelProviderError(

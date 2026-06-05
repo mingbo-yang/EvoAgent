@@ -73,6 +73,10 @@ class LLMResponse(BaseModel):
         default=None,
         description="Why the LLM stopped: stop, tool_calls, length, content_filter.",
     )
+    reasoning_content: str | None = Field(
+        default=None,
+        description="Provider thinking tokens (DeepSeek). Internal use only.",
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Extra metadata.",
