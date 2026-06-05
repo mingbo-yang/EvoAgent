@@ -60,6 +60,12 @@ def create_prompt_session(mode: str = "default", model_label: str = "deepseek:ch
         """Ctrl+O: toggle verbose/compact."""
         event.app.exit(result="/toggle_verbose")
 
+    @bindings.add("escape")
+    def _esc(event):
+        """Escape: routed through EscapeActionResolver."""
+        # Let the CLI layer handle escape resolution
+        event.app.exit(result="/escape")
+
     @bindings.add("c-c")
     def _cc(event):
         if event.app.current_buffer.text:

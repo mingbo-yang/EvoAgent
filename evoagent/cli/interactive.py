@@ -92,6 +92,10 @@ async def run_interactive():
     event_bus.subscribe(UIEventType.TOOL_CALL_FAILED.value, _on_tool)
     runtime = ConversationRuntime(session, router, tools, policy, event_bus=event_bus)
 
+    # Escape resolver for double-Esc exit
+    from evoagent.cli.ui.escape import EscapeActionResolver
+    escape_resolver = EscapeActionResolver(timeout_ms=800)
+
     # Try prompt_toolkit, fall back to sys.stdin
     pt_session = None
     HAS_PT = False
@@ -148,6 +152,23 @@ async def run_interactive():
 
         if user_input == "/interrupt":
             print("\nInterrupted. Session preserved.")
+            continue
+
+        if user_input == "/escape":
+            action = escape_resolver.resolve(
+                is_executing=False,
+                buffer_empty=True,
+            )
+            if action.value == "arm_exit":
+                if escape_resolver.is_armed():
+                    print("\n  Press Esc again to exit.")
+            elif action.value == "exit":
+                store.save(session)
+                print(f"\n  Session saved: {session.session_id}")
+                print("  Goodbye!")
+                break
+            elif action.value == "interrupt":
+                print("\n  Interrupted. Session preserved.")
             continue
 
         if user_input == "/toggle_verbose":
@@ -311,11 +332,12 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
         return "ok"
 
     if command == "/help":
-        print("Session:  /new /resume /clear /exit")
+        print("Session:  /new /resume /fork /clear /reset /exit")
         print("Runtime:  /mode /model /plan /status /compact")
         print("Display:  /verbose /debug /diff /cost /tokens")
         print("Model:    /model list /model status /model <provider>/<id>")
-        print("Tools:    /tools /permissions")
+        print("Tools:    /tools /permissions /tool show <id>")
+        print("Exit:     /exit  Ctrl+D  Esc Esc (idle prompt)")
         return "ok"
 
     if command == "/tools":
