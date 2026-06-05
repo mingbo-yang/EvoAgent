@@ -26,6 +26,7 @@ except ImportError:
 
 _current_model_selection: str = "default"
 _debug_mode: bool = False
+_verbose_level: str = "compact"
 
 
 async def run_interactive():
@@ -252,10 +253,43 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
         return "ok"
 
     if command == "/help":
-        print("Session:  /new /resume /fork /clear /exit")
+        print("Session:  /new /resume /clear /exit")
         print("Runtime:  /mode /model /plan /status /compact")
-        print("Display:  /verbose /debug /diff")
+        print("Display:  /verbose /debug /diff /cost /tokens")
         print("Model:    /model list /model status /model <provider>/<id>")
+        return "ok"
+
+    if command == "/diff":
+        if session.metadata.get("last_diff"):
+            print(session.metadata["last_diff"][:2000])
+        else:
+            print("No diff available. Make edits first.")
+        return "ok"
+
+    if command == "/verbose":
+        global _verbose_level
+        levels = ["off", "compact", "full"]
+        if len(parts) > 1 and parts[1] in levels:
+            _verbose_level = parts[1]
+        else:
+            idx = levels.index(_verbose_level) if _verbose_level in levels else 1
+            _verbose_level = levels[(idx + 1) % 3]
+        print(f"Verbose: {_verbose_level}")
+        return "ok"
+
+    if command == "/cost":
+        print("Cost tracking: session-level cost not yet accumulated.")
+        print("Run with real provider to see per-call costs via /tokens.")
+        return "ok"
+
+    if command == "/tokens":
+        total = sum(len(m.content) for m in session.messages)
+        print(f"Estimated context: {total:,} chars · {total//4:,} tokens")
+        print(f"Messages: {len(session.messages)} · Turns: {len(session.turns)}")
+        return "ok"
+
+    if command == "/compact":
+        print("Context compaction: not yet implemented.")
         return "ok"
 
     if command == "/clear":
