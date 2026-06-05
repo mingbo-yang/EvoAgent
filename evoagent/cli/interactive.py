@@ -77,7 +77,12 @@ async def run_interactive():
             else:
                 print(f"  ◐ {name}")
         else:
-            out = evt.payload.get("output", "")[:150]
+            out_full = evt.payload.get("output", "")
+            out_lines = out_full.split("\n")
+            if len(out_lines) > 3:
+                out = "\n  ".join(out_lines[:3]) + f"\n  … ({len(out_lines)} lines total, /tool show for full output)"
+            else:
+                out = "\n  ".join(out_lines)
             if HAS_RICH and console:
                 console.print(f"● {name}\n  {out}", style="evo.tool")
             else:
@@ -143,6 +148,12 @@ async def run_interactive():
 
         if user_input == "/interrupt":
             print("\nInterrupted. Session preserved.")
+            continue
+
+        if user_input == "/toggle_verbose":
+            global _verbose_level
+            _verbose_level = "full" if _verbose_level == "compact" else "compact"
+            print(f"Verbose: {_verbose_level}")
             continue
 
         # Slash commands

@@ -32,9 +32,33 @@ def create_prompt_session(mode: str = "default", model_label: str = "deepseek:ch
 
     bindings = KeyBindings()
 
+    @bindings.add("enter")
+    def _enter(event):
+        """Enter submits the input."""
+        event.app.current_buffer.validate_and_handle()
+
+    @bindings.add("escape", "enter")
+    def _esc_enter(event):
+        """Esc+Enter inserts newline."""
+        event.app.current_buffer.insert_text("\n")
+
+    @bindings.add("c-j")
+    def _cj(event):
+        """Ctrl+J inserts newline."""
+        event.app.current_buffer.insert_text("\n")
+
     @bindings.add("c-d")
     def _cd(event):
-        event.app.exit(result="/exit")
+        if not event.app.current_buffer.text:
+            event.app.exit(result="/exit")
+        else:
+            # Delete forward on non-empty input
+            event.app.current_buffer.cut_right()
+
+    @bindings.add("c-o")
+    def _co(event):
+        """Ctrl+O: toggle verbose/compact."""
+        event.app.exit(result="/toggle_verbose")
 
     @bindings.add("c-c")
     def _cc(event):
@@ -42,10 +66,6 @@ def create_prompt_session(mode: str = "default", model_label: str = "deepseek:ch
             event.app.current_buffer.text = ""
         else:
             event.app.exit(result="/interrupt")
-
-    @bindings.add("c-j")
-    def _cj(event):
-        event.app.current_buffer.insert_text("\n")
 
     try:
         history = FileHistory(history_path)
@@ -57,6 +77,6 @@ def create_prompt_session(mode: str = "default", model_label: str = "deepseek:ch
 
     return PromptSession(
         message=prompt_text, style=PROMPT_STYLE, completer=SlashCompleter(),
-        key_bindings=bindings, history=history, multiline=True,
+        key_bindings=bindings, history=history, multiline=False,
         wrap_lines=False, bottom_toolbar=_toolbar,
     )
