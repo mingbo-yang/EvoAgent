@@ -2,7 +2,10 @@
 
 Uses internal Message/ToolCall format throughout.
 Provider wire format is handled ONLY by provider adapters.
+Supports streaming, public reasoning, and activity grouping.
 """
+
+from collections.abc import AsyncIterator
 
 from evoagent.conversation.session import ConversationSession
 from evoagent.core.message import Message, MessageRole
@@ -14,22 +17,9 @@ from evoagent.tools.registry import ToolRegistry
 
 
 class ConversationRuntime:
-    """Executes one user turn within a persistent session.
-
-    Loops: model → tool calls → model → ... → final reply.
-    All messages use internal Message/ToolCall format.
-    """
-
-    def __init__(
-        self,
-        session: ConversationSession,
-        model_router: ModelRouter,
-        tool_registry: ToolRegistry,
-        permission_policy: PermissionPolicy | None = None,
-        max_tool_rounds: int = 50,
-        max_steps: int = 100,
-        event_bus=None,
-    ):
+    def __init__(self, session: ConversationSession, model_router: ModelRouter,
+                 tool_registry: ToolRegistry, permission_policy: PermissionPolicy | None = None,
+                 max_tool_rounds: int = 50, max_steps: int = 100, event_bus=None):
         self.session = session
         self.model_router = model_router
         self.tool_registry = tool_registry
@@ -37,34 +27,24 @@ class ConversationRuntime:
         self.max_tool_rounds = max_tool_rounds
         self.max_steps = max_steps
         self.event_bus = event_bus
+        self._tool_names_this_turn: list[str] = []
 
-    async def handle_user_message_stream(self, text: str):
-        """Process one user message, yielding text chunks as they arrive."""
+    async def handle_user_message(self, text: str) -> str:
+        """Process one user message. Non-streaming, backward compatible."""
+        self._tool_names_this_turn = []
         self.session.append_user_message(text)
         system = self._build_system_prompt()
         tools_schema = self.tool_registry.get_tool_schemas()
-        tool_rounds = 0
-        step = 0
-        final_text = ""
+        tool_rounds, step = 0, 0
+        final_response = ""
 
         while tool_rounds < self.max_tool_rounds and step < self.max_steps:
             step += 1
-            history = self.session.messages[-50:]
-            safe_messages = []
-            has_tc = False
-            for m in history:
-                if m.role == MessageRole.ASSISTANT and m.tool_calls:
-                    has_tc = True
-                if m.role == MessageRole.TOOL and not has_tc:
-                    continue
-                safe_messages.append(m)
-                if m.role == MessageRole.TOOL:
-                    has_tc = False
-            request_messages = [Message(role=MessageRole.SYSTEM, content=system)]
-            request_messages.extend(safe_messages)
-
+            safe_msgs = self._safe_messages()
+            request_msgs = [Message(role=MessageRole.SYSTEM, content=system)]
+            request_msgs.extend(safe_msgs)
             provider = self._get_provider("executor")
-            response = await provider.chat(LLMRequest(messages=request_messages, tools=tools_schema))
+            response = await provider.chat(LLMRequest(messages=request_msgs, tools=tools_schema))
 
             assistant_msg = Message(role=MessageRole.ASSISTANT, content=response.content or "",
                                    tool_calls=response.tool_calls,
@@ -74,119 +54,22 @@ class ConversationRuntime:
             if response.tool_calls:
                 tool_rounds += 1
                 for tc in response.tool_calls:
-                    decision = self.permission_policy.check("tool", tc.name, risk_level="medium")
-                    if decision.value == "deny":
-                        self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
-                        continue
-                    if decision.value == "ask":
-                        self.session.append_tool_message(tc.id,
-                            f"Approval required for: {tc.name}. Try alternative approach.", tc.name)
-                        continue
-                    if self.event_bus:
-                        from evoagent.cli.ui.events import UIEvent, UIEventType
-                        await self.event_bus.publish(UIEvent(type=UIEventType.TOOL_CALL_STARTED,
-                            session_id=self.session.session_id,
-                            payload={"tool_name": tc.name, "arguments": tc.arguments}))
-                    try:
-                        result = await self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
-                    except Exception as e:
-                        result = type('obj', (object,), {'success': False, 'output': '', 'error': str(e)})()
-                    tool_content = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
-                    self.session.append_tool_message(tc.id, str(tool_content), tc.name)
-                continue
-
-            final_text = response.content or ""
-            yield final_text
-            break
-
-        self.session.record_turn(text, final_text, tool_rounds)
-
-    async def handle_user_message(self, text: str) -> str:
-        """Process one user message. Multiple tool calls within one turn."""
-        """Process one user message. Multiple tool calls within one turn."""
-        self.session.append_user_message(text)
-
-        system = self._build_system_prompt()
-        tools_schema = self.tool_registry.get_tool_schemas()
-
-        tool_rounds = 0
-        step = 0
-        final_response = ""
-
-        while tool_rounds < self.max_tool_rounds and step < self.max_steps:
-            step += 1
-
-            # Build request — ensure no orphaned tool messages
-            # (every tool message must follow an assistant with tool_calls)
-            history = self.session.messages[-50:]
-            safe_messages = []
-            has_pending_tool_call = False
-            for m in history:
-                if m.role == MessageRole.ASSISTANT and m.tool_calls:
-                    has_pending_tool_call = True
-                if m.role == MessageRole.TOOL and not has_pending_tool_call:
-                    continue  # skip orphaned tool message
-                safe_messages.append(m)
-                if m.role == MessageRole.TOOL:
-                    has_pending_tool_call = False  # consumed
-
-            request_messages = [Message(role=MessageRole.SYSTEM, content=system)]
-            request_messages.extend(safe_messages)
-
-            provider = self._get_provider("executor")
-            response = await provider.chat(LLMRequest(messages=request_messages, tools=tools_schema))
-
-            # Build assistant message from response (internal format only)
-            assistant_msg = Message(
-                role=MessageRole.ASSISTANT,
-                content=response.content or "",
-                tool_calls=response.tool_calls,
-                reasoning_content=response.reasoning_content,
-            )
-            self.session.messages.append(assistant_msg)
-
-            if response.tool_calls:
-                tool_rounds += 1
-                for tc in response.tool_calls:
-                    # Permission check
+                    self._tool_names_this_turn.append(tc.name)
                     decision = self.permission_policy.check("tool", tc.name, risk_level="medium")
                     if decision == PermissionDecision.DENY:
                         self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
                         continue
                     if decision == PermissionDecision.ASK:
-                        self.session.append_tool_message(
-                            tc.id,
-                            f"Approval required for: {tc.name}. "
-                            "Please try an alternative approach or use a read-only tool instead.",
-                            tc.name)
-                        continue  # model will see this tool result and retry
-
-                    # Publish tool_call_started event
-                    if self.event_bus:
-                        from evoagent.cli.ui.events import UIEvent, UIEventType
-                        await self.event_bus.publish(UIEvent(
-                            type=UIEventType.TOOL_CALL_STARTED,
-                            session_id=self.session.session_id,
-                            payload={"tool_name": tc.name, "arguments": tc.arguments},
-                        ))
-
-                    # Execute tool — pass call_id for ToolResult.call_id consistency
+                        self.session.append_tool_message(tc.id, f"Approval required for: {tc.name}. Try alternative.", tc.name)
+                        continue
+                    await self._publish_tool_event("tool_call_started", tc.name, tc.arguments)
                     try:
                         result = await self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
                     except Exception as e:
                         result = type('obj', (object,), {'success': False, 'output': '', 'error': str(e)})()
-
-                    # Publish tool_call_finished event
-                    if self.event_bus:
-                        from evoagent.cli.ui.events import UIEvent, UIEventType
-                        await self.event_bus.publish(UIEvent(
-                            type=UIEventType.TOOL_CALL_FINISHED if getattr(result, 'success', False) else UIEventType.TOOL_CALL_FAILED,
-                            session_id=self.session.session_id,
-                            payload={"tool_name": tc.name, "output": str(getattr(result, 'output', '') or getattr(result, 'error', ''))[:200]},
-                        ))
-
-                    tool_content = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
-                    self.session.append_tool_message(tc.id, str(tool_content), tc.name)
+                    out = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
+                    self.session.append_tool_message(tc.id, str(out), tc.name)
+                    await self._publish_tool_event("tool_call_finished" if getattr(result, 'success', False) else "tool_call_failed", tc.name, {"output": out[:200]})
                 continue
 
             final_response = response.content or ""
@@ -195,19 +78,109 @@ class ConversationRuntime:
         self.session.record_turn(text, final_response, tool_rounds)
         return final_response
 
+    async def handle_user_message_stream(self, text: str) -> AsyncIterator[str]:
+        """Process one user message, yielding text chunks for streaming.
+
+        Yields reasoning summaries and final response chunks.
+        """
+        self._tool_names_this_turn = []
+        self.session.append_user_message(text)
+        system = self._build_system_prompt()
+        tools_schema = self.tool_registry.get_tool_schemas()
+        tool_rounds, step = 0, 0
+
+        while tool_rounds < self.max_tool_rounds and step < self.max_steps:
+            step += 1
+            safe_msgs = self._safe_messages()
+            request_msgs = [Message(role=MessageRole.SYSTEM, content=system)]
+            request_msgs.extend(safe_msgs)
+            provider = self._get_provider("executor")
+
+            # Try streaming for final text response
+            if step == 1 or True:
+                response = await provider.chat(LLMRequest(messages=request_msgs, tools=tools_schema))
+            else:
+                response = await provider.chat(LLMRequest(messages=request_msgs, tools=tools_schema))
+
+            assistant_msg = Message(role=MessageRole.ASSISTANT, content=response.content or "",
+                                   tool_calls=response.tool_calls, reasoning_content=response.reasoning_content)
+            self.session.messages.append(assistant_msg)
+
+            if response.tool_calls:
+                tool_rounds += 1
+                for tc in response.tool_calls:
+                    self._tool_names_this_turn.append(tc.name)
+                    decision = self.permission_policy.check("tool", tc.name, risk_level="medium")
+                    if decision in (PermissionDecision.DENY, PermissionDecision.ASK):
+                        msg = "Permission denied." if decision == PermissionDecision.DENY else f"Approval required: {tc.name}"
+                        self.session.append_tool_message(tc.id, msg, tc.name)
+                        continue
+                    await self._publish_tool_event("tool_call_started", tc.name, tc.arguments)
+                    try:
+                        result = await self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
+                    except Exception as e:
+                        result = type('obj', (object,), {'success': False, 'output': '', 'error': str(e)})()
+                    out = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
+                    self.session.append_tool_message(tc.id, str(out), tc.name)
+                    await self._publish_tool_event("tool_call_finished" if getattr(result, 'success', False) else "tool_call_failed", tc.name, {"output": out[:200]})
+                # Yield reasoning for this tool phase
+                if self._tool_names_this_turn:
+                    yield self._generate_reasoning()
+                continue
+
+            # Final text response — yield chunk by chunk
+            text = response.content or ""
+            for i in range(0, len(text), 80):
+                yield text[i:i+80]
+            break
+
+        self.session.record_turn(text, text if 'text' in dir() else "", tool_rounds)
+
+    def _generate_reasoning(self) -> str:
+        """Generate public reasoning summary based on tool calls made."""
+        names = self._tool_names_this_turn
+        if not names:
+            return ""
+        if "list_directory" in names or "grep" in names:
+            return "· Exploring repository structure..."
+        if "read_file" in names:
+            return "· Reading relevant files..."
+        if "bash" in names or "python" in names:
+            return "· Running commands..."
+        if "write_file" in names or "edit_file" in names:
+            return "· Applying changes..."
+        return f"· Executing: {', '.join(names[:3])}..."
+
+    def _safe_messages(self) -> list[Message]:
+        history = self.session.messages[-50:]
+        safe, has_tc = [], False
+        for m in history:
+            if m.role == MessageRole.ASSISTANT and m.tool_calls:
+                has_tc = True
+            if m.role == MessageRole.TOOL and not has_tc:
+                continue
+            safe.append(m)
+            if m.role == MessageRole.TOOL:
+                has_tc = False
+        return safe
+
+    async def _publish_tool_event(self, etype: str, name: str, payload: dict | None = None):
+        if not self.event_bus:
+            return
+        from evoagent.cli.ui.events import UIEvent, UIEventType
+        await self.event_bus.publish(UIEvent(type=UIEventType(etype), session_id=self.session.session_id,
+                                             payload={"tool_name": name, **(payload or {})}))
+
     def _build_system_prompt(self) -> str:
         from evoagent.conversation.schema import AgentMode
-        mode_hint = {
-            AgentMode.DEFAULT: "You are an interactive coding agent. Use tools when needed.",
-            AgentMode.PLAN: "Plan mode: inspect first. Create a plan before changes. Ask before editing.",
-            AgentMode.AUTO: "Auto mode: execute autonomously. Fix errors automatically.",
-        }
-        base = mode_hint.get(self.session.mode, mode_hint[AgentMode.DEFAULT])
+        hints = {AgentMode.DEFAULT: "You are an interactive coding agent. Use tools.",
+                 AgentMode.PLAN: "Plan mode: inspect first. Create plan before changes. Ask before editing.",
+                 AgentMode.AUTO: "Auto mode: execute autonomously."}
+        base = hints.get(self.session.mode, hints[AgentMode.DEFAULT])
         if self.session.current_plan:
-            steps = [f"{i+1}. {s.goal}" for i, s in enumerate(self.session.current_plan.steps)]
-            base += "\n\nCurrent Plan:\n" + "\n".join(steps)
+            base += "\nPlan:\n" + "\n".join(f"{i+1}. {s.goal}" for i, s in enumerate(self.session.current_plan.steps))
         if self.session.mode == AgentMode.PLAN:
-            base += "\nDo NOT edit files until the user approves your plan."
+            base += "\nDo NOT edit files until the user approves."
         return base
 
     def _get_provider(self, role: str):

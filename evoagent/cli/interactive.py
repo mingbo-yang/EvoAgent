@@ -169,14 +169,25 @@ async def run_interactive():
         try:
             t0 = __import__('time').monotonic()
             if HAS_RICH and console:
-                with console.status("[evo.spinner]Thinking…", spinner="dots"):
-                    response = await runtime.handle_user_message(user_input)
+                # Use streaming path with reasoning display
+                response_parts = []
+                async for chunk in runtime.handle_user_message_stream(user_input):
+                    if chunk.startswith("·"):
+                        console.print(chunk, style="evo.reasoning")
+                    else:
+                        response_parts.append(chunk)
+                response = "".join(response_parts)
                 elapsed = __import__('time').monotonic() - t0
                 tc = sum(1 for m in session.messages if m.role.value == "tool")
+                # Show activity group summary
+                tool_names = getattr(runtime, '_tool_names_this_turn', [])
+                if len(tool_names) >= 3:
+                    uniq = list(dict.fromkeys(tool_names))
+                    label = "Explore" if "list_directory" in uniq or "grep" in uniq else "Execute"
+                    console.print(f"● {label}({', '.join(uniq[:3])}… +{len(tool_names)} tools)", style="evo.tool")
                 parts = [f"{elapsed:.1f}s"]
                 if tc:
                     parts.append(f"{tc} tool calls")
-                # Render with Markdown for code blocks, lists, tables
                 from rich.markdown import Markdown
                 md = Markdown(response, code_theme="monokai")
                 console.print(md)
