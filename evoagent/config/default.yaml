@@ -121,6 +121,15 @@ logging:
   include_tool_results: true
   include_llm_responses: true
 
+conversation:
+  enabled: true
+  default_mode: default
+  persist_sessions: true
+  sessions_dir: ".evoagent/sessions"
+  auto_resume_latest: false
+  max_tool_rounds_per_turn: 50
+  max_steps_per_turn: 100
+
 retrieval:
   embedding_model: mock
   vector_backend: simple

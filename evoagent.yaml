@@ -1,0 +1,22 @@
+# EvoAgent configuration
+project:
+  name: evoagent
+  version: "0.1.0"
+  work_dir: .
+
+models:
+  default:
+    provider: deepseek
+    model: deepseek-chat
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+runtime:
+  max_turns: 20
+
+permissions:
+  mode: review
+
+logging:
+  enabled: true
+  traces_dir: .runs

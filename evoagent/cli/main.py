@@ -5,8 +5,19 @@ import typer
 app = typer.Typer(
     name="evoagent",
     help="EvoAgent — an open-source, research-friendly agent framework.",
-    no_args_is_help=True,
 )
+
+# Make 'evoagent' without args start interactive mode
+app_default = typer.Typer()
+app_default.command(name="__default__", hidden=True)(lambda: None)  # placeholder
+
+@app.callback(invoke_without_command=True)
+def main_callback(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        import asyncio
+
+        from evoagent.cli.interactive import run_interactive
+        asyncio.run(run_interactive())
 
 # Sub-command groups
 init_app = typer.Typer(help="Initialize EvoAgent in the current directory.")
