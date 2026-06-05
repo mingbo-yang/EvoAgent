@@ -35,7 +35,9 @@ async def run_interactive():
     if has_key:
         provider = DeepSeekProvider()
     else:
-        provider = MockLLMProvider(fixed_text='{"risk_level":"low","steps":[{"goal":"Execute","action_type":"finish"}]}')
+        provider = MockLLMProvider(fixed_text="Hello! I'm EvoAgent running in mock mode (no API key configured).\n\n"
+                                              "Set DEEPSEEK_API_KEY to connect to a real LLM.\n\n"
+                                              "Commands: /help /mode /model /plan /tools /status /exit")
 
     router = ModelRouter(providers={"planner": provider, "executor": provider, "critic": provider, "default": provider})
     tools = create_builtin_registry(workspace)
@@ -128,7 +130,12 @@ async def run_interactive():
             else:
                 print(f"EvoAgent[{session.mode.value}][{label}]> ", end="")
                 sys.stdout.flush()
-                user_input = sys.stdin.readline().strip()
+                line = sys.stdin.readline()
+                if not line:  # EOF
+                    store.save(session)
+                    print("\nGoodbye.")
+                    break
+                user_input = line.strip()
 
         except (EOFError, KeyboardInterrupt):
             store.save(session)
