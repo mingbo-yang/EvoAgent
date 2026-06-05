@@ -81,3 +81,16 @@ def test_trace_list_empty():
 def test_invalid_command():
     result = runner.invoke(app, ["nonexistent_command"])
     assert result.exit_code != 0
+
+
+def test_python_m_evoagent_help():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "evoagent", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "Usage: python -m evoagent" in result.stdout
