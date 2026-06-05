@@ -92,9 +92,11 @@ async def run_interactive():
     HAS_PT = False
     try:
         from evoagent.cli.ui.prompt import create_prompt_session
+        bottom = f"{session.mode.value} · {current_provider}:{current_model_id[:12]} · msgs:{len(session.messages)} · turns:{len(session.turns)}"
         pt_session = create_prompt_session(
             mode=session.mode.value,
             model_label=f"{current_provider}:{current_model_id[:12]}",
+            bottom_text=bottom,
         )
         HAS_PT = True
     except ImportError:
@@ -127,6 +129,13 @@ async def run_interactive():
         if not user_input:
             continue
 
+        # Collapse large pastes
+        if user_input.count("\n") > 20 or len(user_input) > 4096:
+            lines = user_input.count("\n") + 1
+            kb = len(user_input) / 1024
+            print(f"  Pasted {lines} lines · {kb:.1f} KB (use Ctrl+O to expand)")
+            # Model still receives full content via runtime
+
         if user_input == "/exit":
             store.save(session)
             print("Goodbye.")
@@ -138,7 +147,7 @@ async def run_interactive():
 
         # Slash commands
         if user_input.startswith("/"):
-            handled = _handle_command(user_input, session, store, provider_registry, model_registry)
+            handled = _handle_command(user_input, session, store, provider_registry, model_registry, tools)
             if handled == "exit":
                 store.save(session)
                 print("Goodbye.")
@@ -156,8 +165,11 @@ async def run_interactive():
                 parts = [f"{elapsed:.1f}s"]
                 if tc:
                     parts.append(f"{tc} tool calls")
-                console.print(f"● {response}", style="evo.success")
-                console.print(f"  ({', '.join(parts)})", style="evo.muted")
+                # Render with Markdown for code blocks, lists, tables
+                from rich.markdown import Markdown
+                md = Markdown(response, code_theme="monokai")
+                console.print(md)
+                console.print(f"({', '.join(parts)})", style="evo.muted")
             else:
                 response = await runtime.handle_user_message(user_input)
                 elapsed = __import__('time').monotonic() - t0
@@ -179,7 +191,7 @@ async def run_interactive():
 
 
 def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
-                    providers=None, models=None) -> str:
+                    providers=None, models=None, tools=None) -> str:
     parts = cmd.strip().split()
     command = parts[0].lower()
 
@@ -265,6 +277,52 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
         print("Runtime:  /mode /model /plan /status /compact")
         print("Display:  /verbose /debug /diff /cost /tokens")
         print("Model:    /model list /model status /model <provider>/<id>")
+        print("Tools:    /tools /permissions")
+        return "ok"
+
+    if command == "/tools":
+        print("Available tools:")
+        for t in sorted(tools.list_tools()) if hasattr(tools, 'list_tools') else []:
+            print(f"  {t}")
+        return "ok"
+
+    if command == "/permissions":
+        print("Permission mode: auto")
+        print("Deny: rm -rf, sudo, shutdown, mkfs, curl|bash")
+        print("Ask: install, commit")
+        return "ok"
+
+    if command == "/tool":
+        if len(parts) < 2:
+            print("Usage: /tool show <id> | /tool list | /tool last")
+            return "ok"
+        sub = parts[1]
+        if sub == "list":
+            tool_msgs = [m for m in session.messages if m.role.value == "tool"]
+            for m in tool_msgs[-10:]:
+                print(f"  {m.tool_call_id}  [{m.name}]  {m.content[:80]}")
+            return "ok"
+        if sub == "last":
+            tool_msgs = [m for m in session.messages if m.role.value == "tool"]
+            if tool_msgs:
+                m = tool_msgs[-1]
+                print(f"ID: {m.tool_call_id}")
+                print(f"Tool: {m.name}")
+                print(f"Output: {m.content[:2000]}")
+            else:
+                print("No tool calls yet.")
+            return "ok"
+        if sub == "show" and len(parts) > 2:
+            tid = parts[2]
+            for m in session.messages:
+                if m.role.value == "tool" and m.tool_call_id == tid:
+                    print(f"ID: {m.tool_call_id}")
+                    print(f"Tool: {m.name}")
+                    print(f"Output:\n{m.content[:3000]}")
+                    return "ok"
+            print(f"Tool call '{tid}' not found.")
+            return "ok"
+        print("Usage: /tool show <id> | /tool list | /tool last")
         return "ok"
 
     if command == "/diff":

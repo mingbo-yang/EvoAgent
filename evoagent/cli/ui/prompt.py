@@ -1,4 +1,4 @@
-"""prompt_toolkit PromptSession setup with keybindings and history."""
+"""prompt_toolkit PromptSession with keybindings, history, and bottom toolbar."""
 
 from evoagent.cli.ui.completion import SlashCompleter
 from prompt_toolkit import PromptSession
@@ -11,21 +11,13 @@ PROMPT_STYLE = Style.from_dict({
     "mode": "#ffff00",
     "model": "#888888",
     "separator": "#00ffff",
+    "toolbar": "bg:#333333 #ffffff",
 })
 
 
 def create_prompt_session(mode: str = "default", model_label: str = "deepseek:chat",
-                          history_path: str = ".evoagent/history") -> PromptSession:
-    """Create a prompt_toolkit PromptSession with EvoAgent styling.
-
-    Args:
-        mode: Agent mode (default/plan/auto).
-        model_label: Provider:model label for prompt.
-        history_path: Path to history file.
-
-    Returns:
-        Configured PromptSession.
-    """
+                          history_path: str = ".evoagent/history",
+                          bottom_text: str = "") -> PromptSession:
     mode_colors = {"default": "ansicyan", "plan": "ansiyellow", "auto": "ansimagenta"}
     mode_color = mode_colors.get(mode, "ansicyan")
 
@@ -41,29 +33,30 @@ def create_prompt_session(mode: str = "default", model_label: str = "deepseek:ch
     bindings = KeyBindings()
 
     @bindings.add("c-d")
-    def _(event):
-        """Ctrl+D: exit after saving."""
+    def _cd(event):
         event.app.exit(result="/exit")
 
     @bindings.add("c-c")
-    def _(event):
-        """Ctrl+C: interrupt current turn."""
+    def _cc(event):
         if event.app.current_buffer.text:
             event.app.current_buffer.text = ""
         else:
             event.app.exit(result="/interrupt")
+
+    @bindings.add("c-j")
+    def _cj(event):
+        event.app.current_buffer.insert_text("\n")
 
     try:
         history = FileHistory(history_path)
     except Exception:
         history = None
 
+    def _toolbar():
+        return [("class:toolbar", bottom_text or f"{mode} · {model_label[:20]}")]
+
     return PromptSession(
-        message=prompt_text,
-        style=PROMPT_STYLE,
-        completer=SlashCompleter(),
-        key_bindings=bindings,
-        history=history,
-        multiline=True,
-        wrap_lines=False,
+        message=prompt_text, style=PROMPT_STYLE, completer=SlashCompleter(),
+        key_bindings=bindings, history=history, multiline=True,
+        wrap_lines=False, bottom_toolbar=_toolbar,
     )

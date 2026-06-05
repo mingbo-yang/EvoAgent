@@ -38,7 +38,71 @@ class ConversationRuntime:
         self.max_steps = max_steps
         self.event_bus = event_bus
 
+    async def handle_user_message_stream(self, text: str):
+        """Process one user message, yielding text chunks as they arrive."""
+        self.session.append_user_message(text)
+        system = self._build_system_prompt()
+        tools_schema = self.tool_registry.get_tool_schemas()
+        tool_rounds = 0
+        step = 0
+        final_text = ""
+
+        while tool_rounds < self.max_tool_rounds and step < self.max_steps:
+            step += 1
+            history = self.session.messages[-50:]
+            safe_messages = []
+            has_tc = False
+            for m in history:
+                if m.role == MessageRole.ASSISTANT and m.tool_calls:
+                    has_tc = True
+                if m.role == MessageRole.TOOL and not has_tc:
+                    continue
+                safe_messages.append(m)
+                if m.role == MessageRole.TOOL:
+                    has_tc = False
+            request_messages = [Message(role=MessageRole.SYSTEM, content=system)]
+            request_messages.extend(safe_messages)
+
+            provider = self._get_provider("executor")
+            response = await provider.chat(LLMRequest(messages=request_messages, tools=tools_schema))
+
+            assistant_msg = Message(role=MessageRole.ASSISTANT, content=response.content or "",
+                                   tool_calls=response.tool_calls,
+                                   reasoning_content=response.reasoning_content)
+            self.session.messages.append(assistant_msg)
+
+            if response.tool_calls:
+                tool_rounds += 1
+                for tc in response.tool_calls:
+                    decision = self.permission_policy.check("tool", tc.name, risk_level="medium")
+                    if decision.value == "deny":
+                        self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
+                        continue
+                    if decision.value == "ask":
+                        self.session.append_tool_message(tc.id,
+                            f"Approval required for: {tc.name}. Try alternative approach.", tc.name)
+                        continue
+                    if self.event_bus:
+                        from evoagent.cli.ui.events import UIEvent, UIEventType
+                        await self.event_bus.publish(UIEvent(type=UIEventType.TOOL_CALL_STARTED,
+                            session_id=self.session.session_id,
+                            payload={"tool_name": tc.name, "arguments": tc.arguments}))
+                    try:
+                        result = await self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
+                    except Exception as e:
+                        result = type('obj', (object,), {'success': False, 'output': '', 'error': str(e)})()
+                    tool_content = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
+                    self.session.append_tool_message(tc.id, str(tool_content), tc.name)
+                continue
+
+            final_text = response.content or ""
+            yield final_text
+            break
+
+        self.session.record_turn(text, final_text, tool_rounds)
+
     async def handle_user_message(self, text: str) -> str:
+        """Process one user message. Multiple tool calls within one turn."""
         """Process one user message. Multiple tool calls within one turn."""
         self.session.append_user_message(text)
 
@@ -91,8 +155,11 @@ class ConversationRuntime:
                         continue
                     if decision == PermissionDecision.ASK:
                         self.session.append_tool_message(
-                            tc.id, f"Approval required for: {tc.name}. Use /approve to continue.", tc.name)
-                        continue
+                            tc.id,
+                            f"Approval required for: {tc.name}. "
+                            "Please try an alternative approach or use a read-only tool instead.",
+                            tc.name)
+                        continue  # model will see this tool result and retry
 
                     # Publish tool_call_started event
                     if self.event_bus:
