@@ -60,10 +60,26 @@ class ConversationRuntime:
                         self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
                         continue
                     if decision == PermissionDecision.ASK:
-                        await self._publish_tool_event("approval_requested", tc.name, {
-                            "tool_call_id": tc.id, "arguments": tc.arguments})
-                        self.session.append_tool_message(tc.id,
-                            f"Approval required for: {tc.name}. Reply 'yes' to approve.", tc.name)
+                        approval_results = await self._publish_tool_event(
+                            "approval_requested", tc.name,
+                            {"tool_call_id": tc.id, "arguments": tc.arguments},
+                        )
+                        approved = any(
+                            r == "yes" or r == "remember" or r is True
+                            for r in approval_results if r is not None
+                        )
+                        if approved:
+                            await self._publish_tool_event("tool_call_started", tc.name, tc.arguments)
+                            try:
+                                result = await self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
+                            except Exception as e:
+                                result = type('obj', (object,), {'success': False, 'output': '', 'error': str(e)})()
+                            out = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
+                            self.session.append_tool_message(tc.id, str(out), tc.name)
+                            await self._publish_tool_event("tool_call_finished" if getattr(result, 'success', False) else "tool_call_failed", tc.name, {"output": out[:200]})
+                        else:
+                            self.session.append_tool_message(tc.id,
+                                f"Approval required for: {tc.name}. Reply 'yes' to approve.", tc.name)
                         continue
                     await self._publish_tool_event("tool_call_started", tc.name, tc.arguments)
                     try:
@@ -118,13 +134,26 @@ class ConversationRuntime:
                         self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
                         continue
                     if decision == PermissionDecision.ASK:
-                        # Publish approval request for CLI to show the approval UI
-                        await self._publish_tool_event("approval_requested", tc.name, {
-                            "tool_call_id": tc.id,
-                            "arguments": tc.arguments,
-                        })
-                        self.session.append_tool_message(tc.id,
-                            f"Approval required for: {tc.name}. Use /approve or reply 'yes' to approve.", tc.name)
+                        approval_results = await self._publish_tool_event(
+                            "approval_requested", tc.name,
+                            {"tool_call_id": tc.id, "arguments": tc.arguments},
+                        )
+                        approved = any(
+                            r == "yes" or r == "remember" or r is True
+                            for r in approval_results if r is not None
+                        )
+                        if approved:
+                            await self._publish_tool_event("tool_call_started", tc.name, tc.arguments)
+                            try:
+                                result = await self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
+                            except Exception as e:
+                                result = type('obj', (object,), {'success': False, 'output': '', 'error': str(e)})()
+                            out = getattr(result, 'output', '') or getattr(result, 'error', '') or ""
+                            self.session.append_tool_message(tc.id, str(out), tc.name)
+                            await self._publish_tool_event("tool_call_finished" if getattr(result, 'success', False) else "tool_call_failed", tc.name, {"output": out[:200]})
+                        else:
+                            self.session.append_tool_message(tc.id,
+                                f"Approval required for: {tc.name}. Reply 'yes' to approve.", tc.name)
                         continue
                     await self._publish_tool_event("tool_call_started", tc.name, tc.arguments)
                     try:
@@ -184,10 +213,10 @@ class ConversationRuntime:
 
     async def _publish_tool_event(self, etype: str, name: str, payload: dict | None = None):
         if not self.event_bus:
-            return
+            return []
         from evoagent.cli.ui.events import UIEvent, UIEventType
-        await self.event_bus.publish(UIEvent(type=UIEventType(etype), session_id=self.session.session_id,
-                                             payload={"tool_name": name, **(payload or {})}))
+        return await self.event_bus.publish(UIEvent(type=UIEventType(etype), session_id=self.session.session_id,
+                                                    payload={"tool_name": name, **(payload or {})}))
 
     def _build_system_prompt(self) -> str:
         from evoagent.conversation.schema import AgentMode

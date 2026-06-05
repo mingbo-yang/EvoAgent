@@ -89,3 +89,16 @@ async def prompt_approval(action: str, command: str, description: str = "",
 
     await app.run_async()
     return done[0] or "no"
+
+
+def render_approval(action: str, command: str, description: str = "",
+                    risk: str = "medium"):
+    """Backward compatibility wrapper for approval UI rendering."""
+    return {"action": action, "command": command, "description": description, "risk": risk}
+
+
+def get_approval_choice(prompt) -> str:
+    """Backward compatibility wrapper for approval UI choice handling."""
+    # Prompt object from legacy UI is not supported here.
+    # Use prompt_approval directly instead for current interactive flows.
+    raise NotImplementedError("Use prompt_approval() instead of get_approval_choice()")

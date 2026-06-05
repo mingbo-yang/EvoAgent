@@ -1,10 +1,11 @@
 """prompt_toolkit PromptSession with keybindings, history, and bottom toolbar."""
 
-from evoagent.cli.ui.completion import SlashCompleter
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
+
+from evoagent.cli.ui.completion import SlashCompleter
 
 PROMPT_STYLE = Style.from_dict({
     "prompt": "#00ffff bold",

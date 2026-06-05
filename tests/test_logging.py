@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from evoagent.logging.event import Event, EventType
 from evoagent.logging.jsonl_logger import JSONLEventLogger
 

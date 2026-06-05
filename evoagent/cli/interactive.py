@@ -101,21 +101,26 @@ async def run_interactive():
         tool = evt.payload.get("tool_name", "?")
         cmd = str(evt.payload.get("arguments", {}))
         if HAS_RICH and console:
-            from evoagent.cli.ui.approval_view import get_approval_choice, render_approval
-            prompt = render_approval("Bash command", cmd[:100],
-                                     f"Run '{tool}' in workspace?",
-                                     risk=evt.payload.get("risk", "medium"))
-            choice = get_approval_choice(prompt)
+            from evoagent.cli.ui.approval_view import prompt_approval
+            choice = await prompt_approval(
+                f"Approve tool: {tool}",
+                cmd[:100],
+                description=f"Run '{tool}' in workspace?",
+                risk=evt.payload.get("risk", "medium"),
+            )
             if choice in ("yes", "remember"):
                 session.metadata[f"approved_{evt.payload.get('tool_call_id','')}"] = True
                 console.print("Approved.", style="evo.success")
             else:
                 console.print("Denied.", style="evo.error")
+            return choice
         else:
             print(f"\nApprove: {tool}? (y/n): ", end="")
             c = sys.stdin.readline().strip().lower()
             if c == "y":
                 session.metadata[f"approved_{evt.payload.get('tool_call_id','')}"] = True
+                return "yes"
+            return "no"
     event_bus.subscribe("approval_requested", _on_approval)
     event_bus.subscribe(UIEventType.TOOL_CALL_STARTED.value, _on_tool)
     event_bus.subscribe(UIEventType.TOOL_CALL_FINISHED.value, _on_tool)

@@ -3,6 +3,8 @@
 import json
 
 import pytest
+from pydantic import BaseModel
+
 from evoagent.core.errors import ModelProviderError
 from evoagent.core.message import Message, MessageRole, ToolCall
 from evoagent.models.factory import MockLLMProvider, ProviderFactory
@@ -13,7 +15,6 @@ from evoagent.models.schema import (
     ModelConfig,
     RouterConfig,
 )
-from pydantic import BaseModel
 
 # ── Schema tests ──────────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from evoagent.memory.retriever import MemoryRetriever
 from evoagent.memory.schema import MemoryItem, MemoryType
 from evoagent.memory.sqlite_store import SQLiteMemoryStore

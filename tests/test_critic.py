@@ -1,6 +1,7 @@
 """Tests for Critic and Reflector."""
 
 import pytest
+
 from evoagent.models.factory import MockLLMProvider
 from evoagent.planning.critic import Critic, CriticDecision
 from evoagent.planning.reflector import Reflector

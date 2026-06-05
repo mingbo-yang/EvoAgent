@@ -1,6 +1,7 @@
 """Tests for MultiAgentManager."""
 
 import pytest
+
 from evoagent.core.errors import EvoAgentError
 from evoagent.models.factory import MockLLMProvider
 from evoagent.models.router import ModelRouter

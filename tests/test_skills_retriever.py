@@ -1,6 +1,7 @@
 """Tests for SkillRetriever."""
 
 import pytest
+
 from evoagent.skills.registry import SkillRegistry
 from evoagent.skills.retriever import SkillRetriever
 from evoagent.skills.schema import Skill

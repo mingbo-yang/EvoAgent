@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from evoagent.rag.citations import CitationBuilder
 from evoagent.rag.document import DocumentChunk
 from evoagent.rag.query_engine import QueryEngine

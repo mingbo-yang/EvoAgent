@@ -1,6 +1,7 @@
 """Tests for WorkflowGraph."""
 
 import pytest
+
 from evoagent.core.errors import EvoAgentError
 from evoagent.core.state import RuntimeState
 from evoagent.workflow.edge import WorkflowEdge

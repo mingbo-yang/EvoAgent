@@ -1,6 +1,7 @@
 """Tests for RAG retrieval."""
 
 import pytest
+
 from evoagent.rag.chunker import SimpleTextChunker
 from evoagent.rag.document import Document
 from evoagent.rag.index import KeywordIndex

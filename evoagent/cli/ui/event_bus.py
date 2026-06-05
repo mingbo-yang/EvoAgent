@@ -28,4 +28,5 @@ class EventBus:
         handlers = self._subscribers.get(event.type.value, [])
         results = [h(event) for h in handlers]
         if results:
-            await asyncio.gather(*results)
+            return await asyncio.gather(*results)
+        return []

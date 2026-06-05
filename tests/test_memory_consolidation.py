@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from evoagent.memory.consolidation import MemoryConsolidator
 from evoagent.memory.evolution import MemoryEvolution
 from evoagent.memory.schema import MemoryItem, MemoryType

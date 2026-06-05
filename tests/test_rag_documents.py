@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from evoagent.rag.chunker import SimpleTextChunker
 from evoagent.rag.loaders import DirectoryLoader, TextLoader
 

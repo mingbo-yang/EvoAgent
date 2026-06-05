@@ -1,6 +1,7 @@
 """Tests for RoleAgent."""
 
 import pytest
+
 from evoagent.models.factory import MockLLMProvider
 from evoagent.models.router import ModelRouter
 from evoagent.multi_agent.base import RoleAgent, RoleAgentConfig

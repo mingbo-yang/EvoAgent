@@ -3,10 +3,14 @@
 from pathlib import Path
 
 import pytest
+
+from evoagent.cli.ui.event_bus import EventBus
+from evoagent.cli.ui.events import UIEventType
 from evoagent.conversation.runtime import ConversationRuntime
 from evoagent.conversation.schema import AgentMode
 from evoagent.conversation.session import ConversationSession
 from evoagent.conversation.store import SessionStore
+from evoagent.core.message import ToolCall
 from evoagent.models.factory import MockLLMProvider
 from evoagent.models.router import ModelRouter
 from evoagent.sandbox.policy import PermissionPolicy
@@ -86,3 +90,27 @@ async def test_runtime_mode_affects_behavior(runtime):
     runtime.session.set_mode(AgentMode.AUTO)
     response = await runtime.handle_user_message("do something")
     assert isinstance(response, str)
+
+
+@pytest.mark.asyncio
+async def test_runtime_tool_approval_executes_when_approved(session):
+    mock = MockLLMProvider(
+        fixed_text="Mock tool call",
+        fixed_tool_calls=[ToolCall(name="list_directory", arguments={"path": "."})],
+    )
+    router = ModelRouter(providers={"planner": mock, "executor": mock, "default": mock})
+    tools = create_builtin_registry(Path("."))
+    policy = PermissionPolicy()
+    event_bus = EventBus()
+
+    async def on_approval(evt):
+        if evt.type == UIEventType.APPROVAL_REQUESTED:
+            return "yes"
+        return None
+
+    event_bus.subscribe(UIEventType.APPROVAL_REQUESTED.value, on_approval)
+    runtime = ConversationRuntime(session, router, tools, policy, event_bus=event_bus)
+
+    response = await runtime.handle_user_message("list workspace")
+    assert isinstance(response, str)
+    assert any(m.role.value == "tool" and m.name == "list_directory" for m in runtime.session.messages)
