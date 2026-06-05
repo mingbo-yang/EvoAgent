@@ -35,9 +35,17 @@ async def run_interactive():
     if has_key:
         provider = DeepSeekProvider()
     else:
-        provider = MockLLMProvider(fixed_text="Hello! I'm EvoAgent running in mock mode (no API key configured).\n\n"
-                                              "Set DEEPSEEK_API_KEY to connect to a real LLM.\n\n"
-                                              "Commands: /help /mode /model /plan /tools /status /exit")
+        print("\n  ⚠ No API key found. EvoAgent needs a model to function.")
+        print("    Set DEEPSEEK_API_KEY, OPENAI_API_KEY, or equivalent.\n")
+        provider = MockLLMProvider(fixed_text="No model configured.\n\n"
+                                              "EvoAgent requires a model provider to function.\n\n"
+                                              "To get started:\n"
+                                              "  1. Set DEEPSEEK_API_KEY environment variable\n"
+                                              "     export DEEPSEEK_API_KEY=\"your-key\"\n"
+                                              "  2. Or configure another provider in evoagent.yaml\n"
+                                              "  3. Restart EvoAgent\n\n"
+                                              "Supported: DeepSeek, OpenAI, Anthropic, Gemini, Mistral, xAI, Ollama\n\n"
+                                              "Type /model to see available providers.")
 
     router = ModelRouter(providers={"planner": provider, "executor": provider, "critic": provider, "default": provider})
     tools = create_builtin_registry(workspace)
@@ -151,6 +159,19 @@ async def run_interactive():
             kb = len(user_input) / 1024
             print(f"  Pasted {lines} lines · {kb:.1f} KB (use Ctrl+O to expand)")
             # Model still receives full content via runtime
+
+        if user_input == "/escape":
+            action = escape_resolver.resolve(is_executing=False, buffer_empty=True)
+            if action.value == "arm_exit":
+                if escape_resolver.is_armed():
+                    print("\n  Press Esc again to exit")
+            elif action.value == "exit":
+                store.save(session)
+                print(f"\n  Session saved: {session.session_id}\n  Goodbye!")
+                break
+            elif action.value == "interrupt":
+                print("\n  Interrupted.")
+            continue
 
         if user_input == "/exit":
             store.save(session)
