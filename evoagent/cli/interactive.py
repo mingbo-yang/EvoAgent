@@ -25,6 +25,7 @@ except ImportError:
     HAS_RICH = False
 
 _current_model_selection: str = "default"
+_debug_mode: bool = False
 
 
 async def run_interactive():
@@ -86,20 +87,37 @@ async def run_interactive():
     event_bus.subscribe(UIEventType.TOOL_CALL_FAILED.value, _on_tool)
     runtime = ConversationRuntime(session, router, tools, policy, event_bus=event_bus)
 
+    # Try prompt_toolkit, fall back to sys.stdin
+    pt_session = None
+    HAS_PT = False
+    try:
+        from evoagent.cli.ui.prompt import create_prompt_session
+        pt_session = create_prompt_session(
+            mode=session.mode.value,
+            model_label=f"{current_provider}:{current_model_id[:12]}",
+        )
+        HAS_PT = True
+    except ImportError:
+        pass
+
     while True:
         try:
             label = f"{current_provider}:{current_model_id[:12]}" if current_model_id else current_provider
-            if HAS_RICH and console:
+            if HAS_PT and pt_session and sys.stdout.isatty():
+                user_input = await pt_session.prompt_async()
+            elif HAS_RICH and console:
                 prompt = Text()
                 prompt.append("EvoAgent", style="evo.prompt")
                 prompt.append(f"[{session.mode.value}]", style=f"evo.{session.mode.value}")
                 prompt.append(f"[{label}]", style="evo.muted")
                 prompt.append(" ❯ ", style="evo.prompt")
                 console.print(prompt, end="")
+                sys.stdout.flush()
+                user_input = sys.stdin.readline().strip()
             else:
                 print(f"EvoAgent[{session.mode.value}][{label}]> ", end="")
-            sys.stdout.flush()
-            user_input = sys.stdin.readline().strip()
+                sys.stdout.flush()
+                user_input = sys.stdin.readline().strip()
 
         except (EOFError, KeyboardInterrupt):
             store.save(session)
@@ -107,6 +125,15 @@ async def run_interactive():
             break
 
         if not user_input:
+            continue
+
+        if user_input == "/exit":
+            store.save(session)
+            print("Goodbye.")
+            break
+
+        if user_input == "/interrupt":
+            print("\nInterrupted. Session preserved.")
             continue
 
         # Slash commands
@@ -132,12 +159,12 @@ async def run_interactive():
                 print(f"\n{response}\n{mark}\n")
         except Exception as exc:
             store.save(session)
+            from evoagent.cli.ui.error_view import render_error
+            err_text = render_error(exc, debug=_debug_mode)
             if HAS_RICH and console:
-                console.print(f"✗ Turn failed: {exc}", style="evo.error")
-                console.print("Session preserved. Use /status or retry.", style="evo.muted")
+                console.print(err_text, style="evo.error")
             else:
-                print(f"\n✗ Turn failed: {exc}")
-                print("Session preserved. Use /status or retry.")
+                print(err_text)
             print()
         store.save(session)
 
@@ -149,6 +176,15 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
 
     if command in ("/exit", "/quit"):
         return "exit"
+
+    if command == "/debug":
+        global _debug_mode
+        if len(parts) > 1:
+            _debug_mode = parts[1].lower() == "on"
+        else:
+            _debug_mode = not _debug_mode
+        print(f"Debug: {'ON' if _debug_mode else 'OFF'}")
+        return "ok"
 
     if command == "/model":
         return _handle_model(parts, providers, models)
