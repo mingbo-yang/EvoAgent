@@ -13,7 +13,7 @@
   </a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="Status" src="https://img.shields.io/badge/status-research%20MVP-yellow">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-360%20passed-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-384%20passed-brightgreen">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -682,6 +682,54 @@ Otherwise install development dependencies manually according to `pyproject.toml
 - pip
 - Git
 - Docker, optional, only for Docker sandbox mode
+
+---
+
+## Quick Start
+
+### Interactive Mode (v0.4.0)
+
+```bash
+evoagent
+```
+
+Opens a persistent interactive session with slash commands:
+
+```
+EvoAgent[default]> Inspect the CLI implementation.
+EvoAgent[default]> /mode plan
+EvoAgent[plan]> Refactor the memory subsystem.
+EvoAgent[auto]> Fix all lint and test failures.
+```
+
+**Slash commands:**
+
+| Command | Action |
+|---------|--------|
+| `/mode default` | Normal multi-turn mode with tools |
+| `/mode plan` | Plan-first mode, requires approval to edit files |
+| `/mode auto` | Autonomous mode, no per-action confirmation |
+| `/plan` | Show current plan |
+| `/sessions` | List saved sessions |
+| `/resume latest` | Resume last session |
+| `/new` | Start a new session |
+| `/status` | Show session info |
+| `/clear` | Clear conversation history |
+| `/exit` | Save session and exit |
+
+### One-Shot Mode (compatible)
+
+```bash
+evoagent run "List files in the current workspace" --mock
+evoagent code "Fix the division-by-zero bug" --mock
+```
+
+### Mock Mode (no API key)
+
+```bash
+evoagent                    # auto-detects and uses mock if no key
+evoagent run "hello" --mock
+```
 
 ---
 

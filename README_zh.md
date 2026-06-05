@@ -13,7 +13,7 @@
   </a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="Status" src="https://img.shields.io/badge/status-research%20MVP-yellow">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-360%20passed-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-384%20passed-brightgreen">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -682,6 +682,54 @@ pip install -e ".[dev]"
 - pip
 - Git
 - Docker，可选，仅 Docker sandbox 模式需要
+
+---
+
+## 快速开始
+
+### 交互模式（v0.4.0 新增）
+
+```bash
+evoagent
+```
+
+直接进入持久交互会话，支持斜杠命令：
+
+```
+EvoAgent[default]> 检查 CLI 实现的代码
+EvoAgent[default]> /mode plan
+EvoAgent[plan]> 重构 memory 子系统
+EvoAgent[auto]> 修复所有 lint 和测试失败
+```
+
+**斜杠命令：**
+
+| 命令 | 功能 |
+|------|------|
+| `/mode default` | 普通多轮模式，带工具调用 |
+| `/mode plan` | 计划优先模式，修改文件前需审批 |
+| `/mode auto` | 自主模式，无需逐次确认 |
+| `/plan` | 显示当前计划 |
+| `/sessions` | 列出已保存会话 |
+| `/resume latest` | 恢复最近会话 |
+| `/new` | 创建新会话 |
+| `/status` | 显示会话信息 |
+| `/clear` | 清空对话历史 |
+| `/exit` | 保存并退出 |
+
+### 单次模式（兼容）
+
+```bash
+evoagent run "列出当前目录文件" --mock
+evoagent code "修复除零 bug" --mock
+```
+
+### Mock 模式（无需 API key）
+
+```bash
+evoagent                    # 无 key 时自动使用 mock
+evoagent run "hello" --mock
+```
 
 ---
 
