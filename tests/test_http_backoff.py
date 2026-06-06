@@ -130,7 +130,7 @@ async def test_transport_error_retried(monkeypatch):
 @pytest.mark.asyncio
 async def test_error_body_is_redacted(monkeypatch):
     provider = _make_provider(monkeypatch, max_retries=0)
-    secret_body = "error: api_key=sk-eb27b94256b84c338b35e73395a56b76 leaked"
+    secret_body = "error: api_key=sk-EXAMPLEFAKEKEY00000000000000000000 leaked"
 
     def handler(request):
         return httpx.Response(500, text=secret_body)
@@ -138,7 +138,7 @@ async def test_error_body_is_redacted(monkeypatch):
     _install_transport(provider, handler)
     with pytest.raises(ModelProviderError) as exc:
         await provider._send_request({"messages": []})
-    assert "sk-eb27b94256" not in str(exc.value)
+    assert "sk-EXAMPLEFAKEKEY" not in str(exc.value)
 
 
 def test_parse_retry_after_seconds():

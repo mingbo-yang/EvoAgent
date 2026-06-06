@@ -6,8 +6,8 @@ from evoagent.core.redaction import REDACTED, redact_obj, redact_text
 
 
 def test_redact_text_openai_key():
-    out = redact_text("token is sk-eb27b94256b84c338b35e73395a56b76 done")
-    assert "sk-eb27" not in out
+    out = redact_text("token is sk-EXAMPLEFAKEKEY00000000000000000000 done")
+    assert "sk-EXAMPLE" not in out
     assert REDACTED in out
 
 
