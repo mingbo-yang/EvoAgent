@@ -1,6 +1,7 @@
-"""Navigation tools — glob file matching and symbol outline extraction."""
+"""Navigation tools — glob, symbol outline, and deterministic code search."""
 
 import ast
+import asyncio
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -175,6 +176,67 @@ class OutlineTool(BaseTool):
         except (FileNotFoundError, PermissionError) as e:
             return ToolResult(
                 call_id=generate_id("call"), name=self.name, success=False, error=str(e),
+            )
+        except Exception as e:
+            return ToolResult(
+                call_id=generate_id("call"), name=self.name, success=False, error=str(e),
+            )
+
+
+class CodeSearchInput(BaseModel):
+    query: str = Field(
+        ...,
+        description="Natural-language or keyword query describing the code to find.",
+    )
+    top_k: int = Field(default=8, ge=1, le=50, description="Max results to return.")
+    refresh: bool = Field(
+        default=False, description="Rebuild the index before searching."
+    )
+
+
+class CodeSearchTool(BaseTool):
+    name = "code_search"
+    description = (
+        "Search the codebase for code relevant to a query and return ranked "
+        "chunks (file path, line range, symbol). Uses deterministic symbol-aware "
+        "chunking plus keyword retrieval — use it to locate where functionality "
+        "lives before reading or editing files."
+    )
+    input_schema = CodeSearchInput
+    risk_level = RiskLevel.LOW
+
+    def __init__(self, workspace: Path):
+        self.workspace = workspace
+        self._retriever = None
+
+    async def run(self, query: str, top_k: int = 8, refresh: bool = False) -> ToolResult:
+        try:
+            from evoagent.retrieval.code_retriever import CodeRetriever
+
+            if self._retriever is None or refresh:
+                retriever = CodeRetriever(self.workspace)
+                await asyncio.to_thread(retriever.build_index)
+                self._retriever = retriever
+            hits = await asyncio.to_thread(self._retriever.search, query, top_k)
+            if not hits:
+                return ToolResult(
+                    call_id=generate_id("call"), name=self.name, success=True,
+                    output="No relevant code found.",
+                    metadata={"query": query, "results": 0},
+                )
+            blocks: list[str] = []
+            for i, ch in enumerate(hits, 1):
+                label = f"{ch.kind} {ch.name}".strip()
+                snippet = "\n".join(
+                    f"    {ln}" for ln in ch.text.splitlines()[:4]
+                )
+                blocks.append(
+                    f"{i}. {ch.location}  ({label})  [score {ch.score:.1f}]\n{snippet}"
+                )
+            return ToolResult(
+                call_id=generate_id("call"), name=self.name, success=True,
+                output="\n\n".join(blocks),
+                metadata={"query": query, "results": len(hits)},
             )
         except Exception as e:
             return ToolResult(

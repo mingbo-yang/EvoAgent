@@ -12,7 +12,7 @@ from evoagent.tools.file_tools import (
     WriteFileTool,
 )
 from evoagent.tools.git_tools import GitDiffTool, GitStatusTool
-from evoagent.tools.navigation_tools import GlobTool, OutlineTool
+from evoagent.tools.navigation_tools import CodeSearchTool, GlobTool, OutlineTool
 from evoagent.tools.python_tools import PythonTool
 from evoagent.tools.registry import ToolRegistry
 from evoagent.tools.search_tools import GrepTool
@@ -76,6 +76,7 @@ def create_builtin_registry(workspace: Path, auto_approve: bool = False,
     registry.register(GrepTool(workspace))
     registry.register(GlobTool(workspace))
     registry.register(OutlineTool(workspace))
+    registry.register(CodeSearchTool(workspace))
     if enable_tests:
         registry.register(RunTestsTool(workspace))
     registry.register(BashTool(workspace, auto_approve=auto_approve))
