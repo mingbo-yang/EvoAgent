@@ -5,7 +5,7 @@ def test_evoagent_import():
     """evoagent top-level package should import."""
     import evoagent
 
-    assert evoagent.__version__ == "0.5.0"
+    assert evoagent.__version__ == "1.0.0"
 
 
 def test_core_import():
