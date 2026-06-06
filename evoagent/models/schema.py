@@ -83,6 +83,26 @@ class LLMResponse(BaseModel):
     )
 
 
+class StreamEvent(BaseModel):
+    """A single event emitted while streaming a chat completion.
+
+    Event types:
+    - ``text``: an incremental assistant text delta (``delta``).
+    - ``reasoning``: an incremental reasoning/thinking delta (``delta``).
+    - ``tool_call``: a fully-assembled tool call (``tool_call``), emitted once
+      its streamed argument fragments have been joined.
+    - ``done``: terminal event carrying the fully-assembled ``response``.
+    - ``error``: a streaming error (``delta`` holds the message).
+    """
+
+    type: str = Field(..., description="text | reasoning | tool_call | done | error")
+    delta: str = Field(default="", description="Incremental text for text/reasoning/error.")
+    tool_call: ToolCall | None = Field(default=None, description="Assembled tool call.")
+    response: LLMResponse | None = Field(
+        default=None, description="Final assembled response (set on 'done')."
+    )
+
+
 class ModelConfig(BaseModel):
     """Configuration for a single model provider instance."""
 

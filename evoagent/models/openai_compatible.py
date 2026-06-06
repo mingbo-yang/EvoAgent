@@ -16,7 +16,7 @@ from evoagent.core.errors import ModelProviderError
 from evoagent.core.message import ToolCall
 from evoagent.core.redaction import redact_text as _redact
 from evoagent.models.base import BaseLLMProvider
-from evoagent.models.schema import LLMRequest, LLMResponse, ModelConfig
+from evoagent.models.schema import LLMRequest, LLMResponse, ModelConfig, StreamEvent
 
 # Status codes that are worth retrying: rate limiting and transient server-side
 # failures. Everything else (4xx other than 429) is a client error and is
@@ -113,39 +113,122 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             ) from e
 
     async def stream_chat(self, request: LLMRequest) -> AsyncIterator[str]:
-        """Stream text chunks from a chat completion request.
+        """Stream assistant text deltas from a chat completion.
 
-        Text-only: this method yields assistant text deltas. Tool calls are
-        NOT assembled from the stream — callers that pass tools must use
-        ``chat()`` (non-streaming) to receive tool_calls reliably.
+        Backward-compatible text-only view over :meth:`stream`. Callers that
+        also need tool_calls assembled from the stream should use
+        :meth:`stream`, which yields structured events including a terminal
+        ``done`` event carrying the full LLMResponse.
+        """
+        async for event in self.stream(request):
+            if event.type == "text" and event.delta:
+                yield event.delta
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[StreamEvent]:
+        """Real token-level streaming with SSE tool_call assembly.
+
+        Yields ``text``/``reasoning`` deltas as they arrive, assembles tool
+        calls from their streamed argument fragments, then yields one
+        ``tool_call`` event per assembled call followed by a terminal ``done``
+        event carrying the complete LLMResponse (content, tool_calls, usage,
+        finish_reason).
         """
         payload = self._build_payload(request, stream=True)
+        # Ask the API to include a final usage chunk for accurate accounting.
+        payload["stream_options"] = {"include_usage": True}
 
         if self._client.is_closed:
             raise ModelProviderError("HTTP client is closed.")
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        # index -> {"id", "name", "args"}
+        tc_acc: dict[int, dict[str, str]] = {}
+        finish_reason: str | None = None
+        usage: dict[str, Any] = {}
+        model_name = request.model or self._config.model
 
         try:
             async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
                     raise ModelProviderError(
-                        f"HTTP {resp.status_code} from {self.provider_name}: {body.decode()[:500]}"
+                        f"HTTP {resp.status_code} from {self.provider_name}: "
+                        f"{_redact(body.decode(errors='replace')[:500])}"
                     )
                 async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data_str)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
-                            continue
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("model"):
+                        model_name = chunk["model"]
+                    if chunk.get("usage"):
+                        u = chunk["usage"]
+                        usage = {
+                            "prompt_tokens": u.get("prompt_tokens", 0),
+                            "completion_tokens": u.get("completion_tokens", 0),
+                            "total_tokens": u.get("total_tokens", 0),
+                        }
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content")
+                    if text:
+                        content_parts.append(text)
+                        yield StreamEvent(type="text", delta=text)
+                    reasoning = delta.get("reasoning_content")
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        yield StreamEvent(type="reasoning", delta=reasoning)
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        slot = tc_acc.setdefault(idx, {"id": "", "name": "", "args": ""})
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        func = tc.get("function") or {}
+                        if func.get("name"):
+                            slot["name"] = func["name"]
+                        if func.get("arguments"):
+                            slot["args"] += func["arguments"]
         except httpx.HTTPError as e:
             raise ModelProviderError(f"Stream request failed: {e}") from e
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tc_acc):
+            slot = tc_acc[idx]
+            if not slot["name"]:
+                continue
+            raw_args = slot["args"] or "{}"
+            try:
+                args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(
+                ToolCall(id=slot["id"], name=slot["name"], arguments=args, raw=raw_args)
+            )
+
+        response = LLMResponse(
+            content="".join(content_parts),
+            model=model_name,
+            provider=self.provider_name,
+            tool_calls=tool_calls or None,
+            usage=usage,
+            finish_reason=finish_reason,
+            reasoning_content="".join(reasoning_parts) or None,
+        )
+        for tc in tool_calls:
+            yield StreamEvent(type="tool_call", tool_call=tc)
+        yield StreamEvent(type="done", response=response)
 
     # ── Internal ──────────────────────────────────────────────────
 

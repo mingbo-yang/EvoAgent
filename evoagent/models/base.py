@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from evoagent.models.schema import LLMRequest, LLMResponse
+from evoagent.models.schema import LLMRequest, LLMResponse, StreamEvent
 
 
 class BaseLLMProvider(ABC):
@@ -62,3 +62,25 @@ class BaseLLMProvider(ABC):
             Text chunks as they arrive.
         """
         ...
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[StreamEvent]:
+        """Stream a chat completion as structured events.
+
+        Yields incremental ``text``/``reasoning`` deltas and fully-assembled
+        ``tool_call`` events, then a terminal ``done`` event carrying the
+        complete :class:`LLMResponse` (content, tool_calls, usage,
+        finish_reason).
+
+        This default implementation falls back to a single non-streaming
+        ``chat()`` call so every provider supports the structured-streaming
+        interface; providers that support server-sent events override it to
+        deliver true token-level streaming with tool_call assembly.
+        """
+        response = await self.chat(request)
+        if response.reasoning_content:
+            yield StreamEvent(type="reasoning", delta=response.reasoning_content)
+        if response.content:
+            yield StreamEvent(type="text", delta=response.content)
+        for tc in response.tool_calls or []:
+            yield StreamEvent(type="tool_call", tool_call=tc)
+        yield StreamEvent(type="done", response=response)
