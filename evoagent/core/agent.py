@@ -43,6 +43,7 @@ class Agent:
         keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
         steering: Any = None,
         checkpoint_dir: str | Path | None = None,
+        tracer: Any = None,
     ):
         self.workspace = Path(workspace)
         self.tool_registry = tool_registry or create_builtin_registry(self.workspace)
@@ -90,6 +91,8 @@ class Agent:
         # Directory for crash-recovery checkpoints (one subdir per run_id).
         # None disables checkpointing.
         self._checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
+        # Optional observability tracer (evoagent.observability.Tracer).
+        self.tracer = tracer
 
     def _get_provider(self, role: str):
         """Get a provider for a role, falling back to default."""
@@ -157,6 +160,7 @@ class Agent:
             keep_recent_tokens=self._keep_recent_tokens,
             steering=self.steering,
             checkpointer=checkpointer,
+            tracer=self.tracer,
         )
 
         user_content = task
@@ -164,7 +168,11 @@ class Agent:
             user_content = f"{task}\n\n{self._memory_context}"
         messages = [Message(role=MessageRole.USER, content=user_content)]
         system_prompt = self._build_system_prompt()
-        run_result = await engine.run_turn(messages, system_prompt=system_prompt)
+        if self.tracer is not None:
+            with self.tracer.span("agent.run", task=task[:120]):
+                run_result = await engine.run_turn(messages, system_prompt=system_prompt)
+        else:
+            run_result = await engine.run_turn(messages, system_prompt=system_prompt)
 
         agent_result = self._build_agent_result(
             run_id, task, messages, run_result, run_cost
@@ -259,6 +267,7 @@ class Agent:
             keep_recent_tokens=self._keep_recent_tokens,
             steering=self.steering,
             checkpointer=store.checkpointer(run_id, task),
+            tracer=self.tracer,
         )
         run_result = await engine.run_turn(messages, system_prompt=system_prompt)
         return self._build_agent_result(run_id, task, messages, run_result, run_cost)

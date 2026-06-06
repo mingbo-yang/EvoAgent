@@ -40,6 +40,10 @@ dev = [
     "mkdocs>=1.5",
     "prompt_toolkit>=3.0",
 ]
+observability = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+]
 
 [project.scripts]
 evoagent = "evoagent.cli.main:app"

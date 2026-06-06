@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -186,6 +187,7 @@ class ReActEngine:
         tool_timeout: float | None = None,
         steering: Any = None,
         checkpointer: Any = None,
+        tracer: Any = None,
     ):
         self.model_router = model_router
         self.tool_registry = tool_registry
@@ -212,6 +214,9 @@ class ReActEngine:
         # Optional crash-recovery checkpointer (see
         # evoagent.core.checkpoint.RunCheckpointer). None disables checkpointing.
         self.checkpointer = checkpointer
+        # Optional observability tracer (evoagent.observability.Tracer). None
+        # disables span emission.
+        self.tracer = tracer
         # Serializes event emission so concurrent read-only tools cannot
         # interleave/corrupt a shared event sink.
         self._emit_lock = asyncio.Lock()
@@ -282,9 +287,16 @@ class ReActEngine:
             request_msgs.extend(safe_messages(messages, self.history_window))
 
             try:
-                response = await provider.chat(
-                    LLMRequest(messages=request_msgs, tools=tools_schema)
-                )
+                with self._span("llm.chat", model=self.role) as sp:
+                    response = await provider.chat(
+                        LLMRequest(messages=request_msgs, tools=tools_schema)
+                    )
+                    if sp is not None:
+                        u = getattr(response, "usage", {}) or {}
+                        sp.attributes["model"] = getattr(response, "model", "") or ""
+                        sp.attributes["prompt_tokens"] = u.get("prompt_tokens", 0)
+                        sp.attributes["completion_tokens"] = u.get("completion_tokens", 0)
+                        sp.attributes["cached_tokens"] = u.get("prompt_cache_hit_tokens", 0)
             except Exception as e:  # provider/network failure
                 result.stop_reason = "provider_error"
                 result.errors.append(f"Provider error: {e}")
@@ -404,9 +416,11 @@ class ReActEngine:
         """
         errors: list[str] = []
         await self._emit("tool_call_started", tc.name, {"arguments": tc.arguments})
+        sp = None
         try:
-            coro = self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
-            tr = await self._await_tool(coro)
+            with self._span("tool.execute", tool=tc.name) as sp:
+                coro = self.tool_registry.run_tool(tc.name, tc.arguments, call_id=tc.id)
+                tr = await self._await_tool(coro)
             ok = bool(getattr(tr, "success", False))
             out = getattr(tr, "output", "") or getattr(tr, "error", "") or ""
             if not isinstance(tr, ToolResult):
@@ -415,6 +429,8 @@ class ReActEngine:
                                 error=getattr(tr, "error", None))
             if not ok and getattr(tr, "error", None):
                 errors.append(f"{tc.name}: {tr.error}")
+            if sp is not None:
+                sp.attributes["success"] = ok
         except _ToolCancelled:
             ok, out = False, f"Tool '{tc.name}' was cancelled by user."
             tr = ToolResult(call_id=tc.id, name=tc.name, success=False, error=str(out))
@@ -527,6 +543,12 @@ class ReActEngine:
                 result.tool_results.append(trs[idx])
             result.errors.extend(errs[idx])
         return [m for m in msgs if m is not None]
+
+    def _span(self, name: str, **attributes: Any):
+        """Return a tracing span context manager, or a no-op when untraced."""
+        if self.tracer is None:
+            return nullcontext()
+        return self.tracer.span(name, **attributes)
 
     def _track_cost(self, response) -> None:
         usage = getattr(response, "usage", None) or {}
