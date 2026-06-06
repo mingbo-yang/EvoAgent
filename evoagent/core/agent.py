@@ -195,7 +195,9 @@ class Agent:
             "done, reply with a concise final answer and no further tool calls. "
             "Do not claim success without verifying via tools. For any task with "
             "multiple steps, call write_todos first to plan the subtasks, keep "
-            "exactly one in_progress, and update it as you complete each step."
+            "exactly one in_progress, and update it as you complete each step. "
+            "After changing code, run the project's tests with run_tests, read "
+            "any failures, fix them, and re-run until they pass."
         )
         store = getattr(self.tool_registry, "todo_store", None)
         if store is not None and store.items:

@@ -17,12 +17,14 @@ from evoagent.tools.registry import ToolRegistry
 from evoagent.tools.search_tools import GrepTool
 from evoagent.tools.shell_tools import BashTool
 from evoagent.tools.snapshots import WorkspaceSnapshotManager
+from evoagent.tools.testing import RunTestsTool
 from evoagent.tools.todo_tools import ListTodosTool, TodoStore, WriteTodosTool
 
 
 def create_builtin_registry(workspace: Path, auto_approve: bool = False,
                             enable_undo: bool = True,
-                            enable_todos: bool = True) -> ToolRegistry:
+                            enable_todos: bool = True,
+                            enable_tests: bool = True) -> ToolRegistry:
     """Create a ToolRegistry populated with all built-in tools.
 
     Args:
@@ -38,11 +40,14 @@ def create_builtin_registry(workspace: Path, auto_approve: bool = False,
         enable_todos: When True (default), register the ``write_todos`` /
             ``list_todos`` task-list tools backed by a persisted store. The
             store is attached as ``registry.todo_store``.
+        enable_tests: When True (default), register the ``run_tests`` tool that
+            runs the project's test suite and returns a failure-focused summary
+            for the edit -> test -> fix loop.
 
     Returns:
         ToolRegistry with read_file, write_file, edit_file, multi_edit,
-        apply_patch, undo_last, write_todos, list_todos, list_directory, grep,
-        bash, python, git_status, git_diff.
+        apply_patch, undo_last, write_todos, list_todos, run_tests,
+        list_directory, grep, bash, python, git_status, git_diff.
     """
     registry = ToolRegistry(workspace=workspace)
     snapshots = WorkspaceSnapshotManager(workspace) if enable_undo else None
@@ -61,6 +66,8 @@ def create_builtin_registry(workspace: Path, auto_approve: bool = False,
         registry.register(ListTodosTool(store))
     registry.register(ListDirTool(workspace))
     registry.register(GrepTool(workspace))
+    if enable_tests:
+        registry.register(RunTestsTool(workspace))
     registry.register(BashTool(workspace, auto_approve=auto_approve))
     registry.register(PythonTool(workspace))
     registry.register(GitStatusTool(workspace))

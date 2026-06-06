@@ -48,6 +48,8 @@ def classify_tool(name: str, arguments: dict) -> tuple[str, str, str]:
         return "file_read", str(args.get("path", "") or args.get("pattern", "")), "low"
     if n in ("python", "run_python"):
         return "python", str(args.get("code", ""))[:200], "medium"
+    if n in ("run_tests", "test", "pytest"):
+        return "shell", str(args.get("command", "") or "run_tests"), "medium"
     if n in ("write_todos", "list_todos", "update_todo", "create_todo"):
         return "todo", n, "low"
     if n.startswith("git"):
