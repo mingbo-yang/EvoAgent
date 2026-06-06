@@ -54,8 +54,25 @@ def test_model_registry_resolve_direct():
     assert resolved == "deepseek/deepseek-chat"
 
 
+def test_make_model_config_invalid_selection_returns_none():
+    from evoagent.cli.interactive import _make_model_config
+    from evoagent.config.loader import load_config
+    provider_registry = ProviderRegistry()
+    model_registry = ModelRegistry()
+    config = load_config()
+
+    assert _make_model_config("unknown-model", provider_registry, model_registry, config) is None
+    assert _make_model_config("", provider_registry, model_registry, config) is None
+
+
 def test_model_registry_favorites():
     mr = ModelRegistry()
     mr.add_favorite("deepseek/deepseek-chat")
     mr.mark_recent("deepseek/deepseek-chat")
     assert "deepseek/deepseek-chat" in mr.get_recent()
+
+
+def test_model_registry_refresh_is_noop():
+    mr = ModelRegistry()
+    mr.refresh()
+    assert mr.get_recent() == []

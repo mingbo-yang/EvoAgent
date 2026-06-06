@@ -41,20 +41,28 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             ModelProviderError: If the API key is not found in the environment.
         """
         self._config = config
-        self._api_key = os.getenv(config.api_key_env, "")
-
-        if not self._api_key:
+        if not config.base_url:
             raise ModelProviderError(
-                f"API key not found. Set the environment variable "
-                f"'{config.api_key_env}' or configure it in evoagent.yaml."
+                "Base URL is required for OpenAI-compatible providers. "
+                "Set base_url in evoagent.yaml or use a provider with a default endpoint."
             )
+
+        self._api_key = ""
+        if config.api_key_env:
+            self._api_key = os.getenv(config.api_key_env, "")
+            if not self._api_key:
+                raise ModelProviderError(
+                    f"API key not found. Set the environment variable "
+                    f"'{config.api_key_env}' or configure it in evoagent.yaml."
+                )
+
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
 
         self._client = httpx.AsyncClient(
             base_url=config.base_url.rstrip("/"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             timeout=httpx.Timeout(config.timeout),
         )
 

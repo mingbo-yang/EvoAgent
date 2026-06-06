@@ -3,7 +3,10 @@
 import json
 from pathlib import Path
 
+from evoagent.conversation.schema import TurnRecord
 from evoagent.conversation.session import ConversationSession
+from evoagent.core.message import Message
+from evoagent.planning.schema import Plan
 
 
 class SessionStore:
@@ -22,11 +25,10 @@ class SessionStore:
             "mode": session.mode.value,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
+            "current_plan": session.current_plan.model_dump() if session.current_plan else None,
+            "metadata": session.metadata,
             "turns": [t.model_dump() for t in session.turns],
-            "messages": [
-                {"role": m.role.value, "content": m.content, "tool_call_id": m.tool_call_id, "name": m.name}
-                for m in session.messages[-100:]
-            ],
+            "messages": [m.model_dump() for m in session.messages[-100:]],
         }
         (session_dir / "session.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
         return session.session_id
@@ -36,10 +38,28 @@ class SessionStore:
         if not session_dir.exists():
             return None
         data = json.loads((session_dir / "session.json").read_text())
-        session = ConversationSession(session_id=data["session_id"], workspace=data.get("workspace", "."))
-        session.mode = __import__("evoagent.conversation.schema", fromlist=["AgentMode"]).AgentMode(data.get("mode", "default"))
+        session = ConversationSession(
+            session_id=data["session_id"],
+            workspace=data.get("workspace", "."),
+        )
+        session.mode = __import__(
+            "evoagent.conversation.schema",
+            fromlist=["AgentMode"],
+        ).AgentMode(data.get("mode", "default"))
         session.created_at = data.get("created_at", "")
         session.updated_at = data.get("updated_at", "")
+        session.current_plan = (
+            Plan.model_validate(data["current_plan"]) if data.get("current_plan") else None
+        )
+        session.metadata = data.get("metadata", {})
+        session.turns = [
+            TurnRecord.model_validate(t)
+            for t in data.get("turns", [])
+        ]
+        session.messages = [
+            Message.model_validate(m)
+            for m in data.get("messages", [])
+        ]
         return session
 
     def list_sessions(self) -> list[str]:

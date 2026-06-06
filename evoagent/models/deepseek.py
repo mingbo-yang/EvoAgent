@@ -34,7 +34,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         """
         merged = self.DEEPSEEK_DEFAULTS.model_copy()
         if config:
-            for field_name in config.model_fields:
+            for field_name in config.__class__.model_fields:
                 value = getattr(config, field_name)
                 if value is not None:
                     setattr(merged, field_name, value)

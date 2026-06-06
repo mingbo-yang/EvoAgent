@@ -199,16 +199,49 @@ class ConversationRuntime:
         return msg
 
     def _safe_messages(self) -> list[Message]:
+        """Build a provider-safe message history.
+
+        Guarantees that every assistant message carrying tool_calls is
+        immediately followed by exactly one tool message per tool_call_id,
+        and that no orphan tool messages remain. The trailing window may
+        split an assistant/tool group, so incomplete groups are dropped to
+        avoid an invalid request (a tool_calls message must be answered by a
+        tool message for *every* tool_call_id).
+        """
         history = self.session.messages[-50:]
-        safe, has_tc = [], False
-        for m in history:
+        # Drop leading orphan tool messages (the window may start mid-group).
+        start = 0
+        while start < len(history) and history[start].role == MessageRole.TOOL:
+            start += 1
+        history = history[start:]
+
+        safe: list[Message] = []
+        i, n = 0, len(history)
+        while i < n:
+            m = history[i]
             if m.role == MessageRole.ASSISTANT and m.tool_calls:
-                has_tc = True
-            if m.role == MessageRole.TOOL and not has_tc:
+                # Gather the tool responses that immediately follow this turn.
+                tool_msgs: list[Message] = []
+                j = i + 1
+                while j < n and history[j].role == MessageRole.TOOL:
+                    tool_msgs.append(history[j])
+                    j += 1
+                responded = {t.tool_call_id for t in tool_msgs}
+                required = {tc.id for tc in m.tool_calls}
+                if required and required.issubset(responded):
+                    safe.append(m)
+                    safe.extend(tool_msgs)
+                # else: incomplete group (truncated or missing responses) —
+                # drop the assistant tool_calls turn and its partial tool
+                # messages so the request stays valid.
+                i = j
+                continue
+            if m.role == MessageRole.TOOL:
+                # Orphan tool message without a preceding tool_calls turn.
+                i += 1
                 continue
             safe.append(m)
-            if m.role == MessageRole.TOOL:
-                has_tc = False
+            i += 1
         return safe
 
     async def _publish_tool_event(self, etype: str, name: str, payload: dict | None = None):

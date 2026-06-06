@@ -1,18 +1,20 @@
 """Interactive CLI — Rich-powered terminal interface with banner, streaming, tool view."""
 
-import os
+import copy
 import sys
 from pathlib import Path
 
+from evoagent.config.loader import load_config
+from evoagent.config.schema import EvoAgentConfig
 from evoagent.conversation.runtime import ConversationRuntime
 from evoagent.conversation.schema import AgentMode
 from evoagent.conversation.session import ConversationSession
 from evoagent.conversation.store import SessionStore
-from evoagent.models.deepseek import DeepSeekProvider
-from evoagent.models.factory import MockLLMProvider
+from evoagent.models.factory import MockLLMProvider, ProviderFactory
 from evoagent.models.provider_registry import ProviderRegistry
 from evoagent.models.registry import ModelRegistry
 from evoagent.models.router import ModelRouter
+from evoagent.models.schema import ModelConfig
 from evoagent.sandbox.policy import PermissionPolicy
 from evoagent.tools.builtin import create_builtin_registry
 
@@ -28,52 +30,120 @@ _debug_mode: bool = False
 _verbose_level: str = "compact"
 
 
+def _make_model_config(
+    selection: str,
+    providers: ProviderRegistry,
+    models: ModelRegistry,
+    config: EvoAgentConfig,
+) -> ModelConfig | None:
+    if selection == "default":
+        return ModelConfig.model_validate(config.models.default.model_dump())
+
+    resolved = models.resolve(selection) if models else selection
+    if not resolved or "/" not in resolved:
+        return None
+
+    provider_id, model_id = resolved.split("/", 1)
+    provider_def = providers.get(provider_id) if providers else None
+    if provider_def is None:
+        return None
+
+    return ModelConfig(
+        provider=provider_id,
+        adapter_type=provider_def.adapter_type,
+        model=model_id,
+        base_url=provider_def.base_url or "",
+        api_key_env=provider_def.api_key_env or "",
+        temperature=config.models.default.temperature,
+        max_tokens=config.models.default.max_tokens,
+        timeout=config.models.default.timeout,
+        max_retries=config.models.default.max_retries,
+    )
+
+
+def _build_provider(
+    selection: str,
+    providers: ProviderRegistry,
+    models: ModelRegistry,
+    config: EvoAgentConfig,
+):
+    model_config = _make_model_config(selection, providers, models, config)
+    if not model_config:
+        return None
+    try:
+        return ProviderFactory.create(model_config)
+    except Exception:
+        return None
+
+
+def _bind_provider_to_router(router: ModelRouter, provider) -> None:
+    for role in ("planner", "executor", "critic", "default"):
+        router.register(role, provider)
+
+
 async def run_interactive():
+    global _current_model_selection
     workspace = Path.cwd()
-    has_key = bool(os.getenv("DEEPSEEK_API_KEY"))
-
-    if has_key:
-        provider = DeepSeekProvider()
-    else:
-        print("\n  ⚠ No API key found. EvoAgent needs a model to function.")
-        print("    Set DEEPSEEK_API_KEY, OPENAI_API_KEY, or equivalent.\n")
-        provider = MockLLMProvider(fixed_text="No model configured.\n\n"
-                                              "EvoAgent requires a model provider to function.\n\n"
-                                              "To get started:\n"
-                                              "  1. Set DEEPSEEK_API_KEY environment variable\n"
-                                              "     export DEEPSEEK_API_KEY=\"your-key\"\n"
-                                              "  2. Or configure another provider in evoagent.yaml\n"
-                                              "  3. Restart EvoAgent\n\n"
-                                              "Supported: DeepSeek, OpenAI, Anthropic, Gemini, Mistral, xAI, Ollama\n\n"
-                                              "Type /model to see available providers.")
-
-    router = ModelRouter(providers={"planner": provider, "executor": provider, "critic": provider, "default": provider})
-    tools = create_builtin_registry(workspace)
-    policy = PermissionPolicy()
-    store = SessionStore()
+    config = load_config()
     provider_registry = ProviderRegistry()
     model_registry = ModelRegistry()
 
-    session = ConversationSession(workspace=str(workspace))
-    runtime = ConversationRuntime(session, router, tools, policy)
+    provider = _build_provider("default", provider_registry, model_registry, config)
+    if provider is None:
+        print("\n  ⚠ No configured model provider found. EvoAgent needs a model to function.")
+        print("    Set an API key or configure a provider in evoagent.yaml.\n")
+        provider = MockLLMProvider(
+            fixed_text=
+            "No model configured.\n\n"
+            "EvoAgent requires a model provider to function.\n\n"
+            "To get started:\n"
+            "  1. Set DEEPSEEK_API_KEY, OPENAI_API_KEY, or "
+            "equivalent environment variable\n"
+            "  2. Or configure another provider in evoagent.yaml\n"
+            "  3. Restart EvoAgent\n\n"
+            "Supported: DeepSeek, OpenAI, Anthropic, Gemini, Mistral, xAI, Ollama\n\n"
+            "Type /model to see available providers."
+        )
+        _current_model_selection = "mock"
 
-    current_provider = "deepseek" if has_key else "mock"
-    current_model_id = "deepseek-chat" if has_key else "mock"
+    router = ModelRouter(
+        providers={
+            "planner": provider,
+            "executor": provider,
+            "critic": provider,
+            "default": provider,
+        }
+    )
+    tools = create_builtin_registry(workspace)
+    policy = PermissionPolicy()
+    store = SessionStore()
+
+    session = ConversationSession(workspace=str(workspace))
+
     version = "v0.5.0"
 
     # Banner
     if HAS_RICH and sys.stdout.isatty():
-        console = Console(theme=__import__("evoagent.cli.ui.theme", fromlist=["EVO_THEME"]).EVO_THEME)
+        console = Console(
+            theme=__import__("evoagent.cli.ui.theme", fromlist=["EVO_THEME"]).EVO_THEME
+        )
         from evoagent.cli.ui.banner import render_banner
-        console.print(render_banner(version, f"{current_provider}:{current_model_id[:12]}",
-                                    session.mode.value, str(workspace), context_pct=8,
-                                    billing="API Billing" if has_key else "Free"))
+        console.print(
+            render_banner(
+                version,
+                _current_model_selection,
+                session.mode.value,
+                str(workspace),
+                context_pct=8,
+                billing="API Billing" if _current_model_selection != "mock" else "Free",
+            )
+        )
     elif sys.stdout.isatty():
         from evoagent.cli.ui.banner import render_simple_startup
-        render_simple_startup(version, f"{current_provider}:{current_model_id}", session.mode.value)
+        render_simple_startup(version, _current_model_selection, session.mode.value)
     else:
         console = None
-        print(f"EvoAgent {version} | {current_provider}:{current_model_id} | {session.mode.value}")
+        print(f"EvoAgent {version} | {_current_model_selection} | {session.mode.value}")
 
     # EventBus for tool activity rendering
     from evoagent.cli.ui.event_bus import EventBus
@@ -90,7 +160,10 @@ async def run_interactive():
             out_full = evt.payload.get("output", "")
             out_lines = out_full.split("\n")
             if len(out_lines) > 3:
-                out = "\n  ".join(out_lines[:3]) + f"\n  … ({len(out_lines)} lines total, /tool show for full output)"
+                out = (
+                    "\n  ".join(out_lines[:3])
+                    + f"\n  … ({len(out_lines)} lines total, /tool show for full output)"
+                )
             else:
                 out = "\n  ".join(out_lines)
             if HAS_RICH and console:
@@ -136,10 +209,13 @@ async def run_interactive():
     HAS_PT = False
     try:
         from evoagent.cli.ui.prompt import create_prompt_session
-        bottom = f"{session.mode.value} · {current_provider}:{current_model_id[:12]} · msgs:{len(session.messages)} · turns:{len(session.turns)}"
+        bottom = (
+            f"{session.mode.value} · {_current_model_selection} · "
+            f"msgs:{len(session.messages)} · turns:{len(session.turns)}"
+        )
         pt_session = create_prompt_session(
             mode=session.mode.value,
-            model_label=f"{current_provider}:{current_model_id[:12]}",
+            model_label=_current_model_selection,
             bottom_text=bottom,
         )
         HAS_PT = True
@@ -148,7 +224,7 @@ async def run_interactive():
 
     while True:
         try:
-            label = f"{current_provider}:{current_model_id[:12]}" if current_model_id else current_provider
+            label = _current_model_selection
             if HAS_PT and pt_session and sys.stdout.isatty():
                 user_input = await pt_session.prompt_async()
             elif HAS_RICH and console:
@@ -232,7 +308,16 @@ async def run_interactive():
 
         # Slash commands
         if user_input.startswith("/"):
-            handled = _handle_command(user_input, session, store, provider_registry, model_registry, tools)
+            handled = _handle_command(
+                user_input,
+                session,
+                store,
+                provider_registry,
+                model_registry,
+                tools,
+                router,
+                config,
+            )
             if handled == "exit":
                 store.save(session)
                 print("Goodbye.")
@@ -258,8 +343,15 @@ async def run_interactive():
                 tool_names = getattr(runtime, '_tool_names_this_turn', [])
                 if len(tool_names) >= 3:
                     uniq = list(dict.fromkeys(tool_names))
-                    label = "Explore" if "list_directory" in uniq or "grep" in uniq else "Execute"
-                    console.print(f"● {label}({', '.join(uniq[:3])}… +{len(tool_names)} tools)", style="evo.tool")
+                    label = (
+                        "Explore"
+                        if "list_directory" in uniq or "grep" in uniq
+                        else "Execute"
+                    )
+                    console.print(
+                        f"● {label}({', '.join(uniq[:3])}… +{len(tool_names)} tools)",
+                        style="evo.tool",
+                    )
                 parts = [f"{elapsed:.1f}s"]
                 if tc:
                     parts.append(f"{tc} tool calls")
@@ -288,7 +380,8 @@ async def run_interactive():
 
 
 def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
-                    providers=None, models=None, tools=None) -> str:
+                    providers=None, models=None, tools=None, router=None,
+                    config: EvoAgentConfig | None = None) -> str:
     parts = cmd.strip().split()
     command = parts[0].lower()
 
@@ -305,7 +398,7 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
         return "ok"
 
     if command == "/model":
-        return _handle_model(parts, providers, models)
+        return _handle_model(parts, providers, models, router, config, session)
 
     if command == "/mode":
         if len(parts) > 1:
@@ -373,9 +466,14 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
             return "ok"
         if loaded:
             session.session_id = loaded.session_id
-            session.messages = loaded.messages
+            session.workspace = loaded.workspace
             session.mode = loaded.mode
+            session.messages = loaded.messages
+            session.current_plan = loaded.current_plan
             session.turns = loaded.turns
+            session.metadata = loaded.metadata
+            session.created_at = loaded.created_at
+            session.updated_at = loaded.updated_at
             print(f"Resumed session {loaded.session_id}")
         else:
             print("Session not found.")
@@ -388,10 +486,10 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
 
     if command == "/fork":
         new_session = ConversationSession(workspace=str(session.workspace))
-        new_session.messages = list(session.messages)
+        new_session.messages = copy.deepcopy(session.messages)
         new_session.mode = session.mode
-        new_session.current_plan = session.current_plan
-        new_session.turns = list(session.turns)
+        new_session.current_plan = copy.deepcopy(session.current_plan)
+        new_session.turns = copy.deepcopy(session.turns)
         store.save(new_session)
         session.session_id = new_session.session_id
         print(f"Forked session: {new_session.session_id} (history preserved)")
@@ -527,7 +625,10 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
             session.messages = kept
             print(f"Compacted: {old_count} → {len(kept)} messages ({total_chars:,} chars)")
         else:
-            print(f"Context: {total_chars:,} chars · {len(session.messages)} msgs (no compaction needed)")
+            print(
+                f"Context: {total_chars:,} chars · {len(session.messages)} "
+                "msgs (no compaction needed)"
+            )
         return "ok"
 
     if command == "/undo":
@@ -550,14 +651,24 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
     return "ok"
 
 
-def _handle_model(parts: list[str], providers, models) -> str:
+def _handle_model(
+    parts: list[str],
+    providers,
+    models,
+    router: ModelRouter | None = None,
+    config: EvoAgentConfig | None = None,
+    session: ConversationSession | None = None,
+) -> str:
     global _current_model_selection
     if len(parts) == 1:
         print(f"Current: {_current_model_selection}")
         if providers:
             for pid, status in providers.status_summary().items():
                 print(f"  {pid:20s} {status}")
-        print("Usage: /model list | /model <provider>/<id> | /model pro")
+        print(
+            "Usage: /model list | /model <provider>/<id> | /model <alias> | "
+            "/model status | /model refresh | /model default"
+        )
         return "ok"
 
     sub = parts[1].lower()
@@ -573,19 +684,68 @@ def _handle_model(parts: list[str], providers, models) -> str:
         print(f"Current: {_current_model_selection}")
         return "ok"
 
-    # Switch: /model <provider>/<id> or /model <alias>
-    target = parts[1]
-    if "/" in target:
-        print(f"Model: {target}")
-        _current_model_selection = target
+    if sub == "refresh":
+        if models and hasattr(models, "refresh"):
+            models.refresh()
+            print("Model registry refreshed.")
+        else:
+            print("Model refresh not available in this version.")
         return "ok"
 
-    if models:
+    if sub == "default":
+        if router and config:
+            provider = _build_provider("default", providers, models, config)
+            if provider:
+                _bind_provider_to_router(router, provider)
+                _current_model_selection = "default"
+                print("Model: default")
+                return "ok"
+            print("Failed to create default provider. Check API key or provider configuration.")
+            return "ok"
+        _current_model_selection = "default"
+        print("Model: default")
+        return "ok"
+
+    target = parts[1]
+    if "/" not in target and models:
         resolved = models.resolve(target)
         if resolved:
-            print(f"Model: {resolved} (alias: {target})")
-            _current_model_selection = resolved
+            target = resolved
+            print(f"Model: {target} (alias: {parts[1]})")
+        else:
+            print(f"Unknown: {parts[1]}")
             return "ok"
+    else:
+        print(f"Model: {target}")
 
-    print(f"Unknown: {target}")
+    if router and config:
+        # Validate model capabilities before switching
+        # Resolve target to canonical id before lookup (handles aliases and
+        # previously unseen canonical IDs added lazily by ModelRegistry.resolve).
+        try:
+            resolved_id = models.resolve(target) if models else target
+        except Exception:
+            resolved_id = target
+        try:
+            model_def = models.get(resolved_id) if (models and resolved_id) else None
+        except Exception:
+            model_def = None
+        if model_def and session and session.current_plan:
+            try:
+                from evoagent.planning.schema import ActionType
+                needs_tool = any(s.action_type == ActionType.TOOL for s in session.current_plan.steps)
+            except Exception:
+                needs_tool = False
+            if needs_tool and not model_def.supports_tools:
+                print(
+                    "Cannot switch: target model does not support tools while current plan requires tools."
+                )
+                return "ok"
+
+        provider = _build_provider(target, providers, models, config)
+        if provider is None:
+            print("Failed to create provider. Check API key, base_url, or provider configuration.")
+            return "ok"
+        _bind_provider_to_router(router, provider)
+    _current_model_selection = target
     return "ok"

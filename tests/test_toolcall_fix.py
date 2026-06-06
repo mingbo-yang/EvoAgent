@@ -73,7 +73,12 @@ async def test_multi_tool_loop_no_validation_error():
                 return LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls",
                                    model="mock", provider="mock")
             else:
-                return LLMResponse(content="All done.", finish_reason="stop", model="mock", provider="mock")
+                return LLMResponse(
+                    content="All done.",
+                    finish_reason="stop",
+                    model="mock",
+                    provider="mock",
+                )
     router = ModelRouter(providers={"executor": MockProvider(), "default": MockProvider()})
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
@@ -107,6 +112,280 @@ async def test_cli_exception_recovery():
     from evoagent.cli.interactive import _handle_command
     result = _handle_command("/help", ConversationSession(), None)
     assert result == "ok"
+
+
+def test_model_command_switches_router(monkeypatch, tmp_path):
+    from evoagent.cli.interactive import _handle_command
+    from evoagent.config.loader import load_config
+    from evoagent.conversation.session import ConversationSession
+    from evoagent.conversation.store import SessionStore
+    from evoagent.models.factory import MockLLMProvider
+    from evoagent.models.provider_registry import ProviderRegistry
+    from evoagent.models.registry import ModelRegistry
+    from evoagent.models.router import ModelRouter
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    session = ConversationSession()
+    original_id = session.session_id
+    session.append_user_message("hello")
+    session.append_assistant_message("hi")
+
+    store = SessionStore(sessions_dir=str(tmp_path / "sessions"))
+    provider_registry = ProviderRegistry()
+    model_registry = ModelRegistry()
+    model_registry.add_alias("gpt", "openai/gpt-4o")
+    router = ModelRouter(providers={
+        "planner": MockLLMProvider(),
+        "executor": MockLLMProvider(),
+        "critic": MockLLMProvider(),
+        "default": MockLLMProvider(),
+    })
+    config = load_config()
+
+    result = _handle_command(
+        "/model gpt",
+        session,
+        store,
+        provider_registry,
+        model_registry,
+        None,
+        router,
+        config,
+    )
+    assert result == "ok"
+    provider = router._get_provider("default")
+    assert provider.provider_name == "openai"
+    assert session.session_id == original_id
+    assert len(session.messages) == 2
+
+
+def test_model_command_cross_provider_switch(monkeypatch, tmp_path):
+    from evoagent.cli.interactive import _handle_command
+    from evoagent.config.loader import load_config
+    from evoagent.conversation.session import ConversationSession
+    from evoagent.conversation.store import SessionStore
+    from evoagent.models.factory import MockLLMProvider
+    from evoagent.models.provider_registry import ProviderRegistry
+    from evoagent.models.registry import ModelRegistry
+    from evoagent.models.router import ModelRouter
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    session = ConversationSession()
+    session.append_user_message("hello")
+    session.append_assistant_message("hi")
+    from evoagent.planning.schema import Plan
+    session.current_plan = Plan(task="Switch plan", steps=[])
+
+    store = SessionStore(sessions_dir=str(tmp_path / "sessions"))
+    provider_registry = ProviderRegistry()
+    model_registry = ModelRegistry()
+    model_registry.add_alias("gpt4", "openai/gpt-4")
+    router = ModelRouter(providers={
+        "planner": MockLLMProvider(),
+        "executor": MockLLMProvider(),
+        "critic": MockLLMProvider(),
+        "default": MockLLMProvider(),
+    })
+    config = load_config()
+
+    result = _handle_command(
+        "/model gpt4",
+        session,
+        store,
+        provider_registry,
+        model_registry,
+        None,
+        router,
+        config,
+    )
+    assert result == "ok"
+    assert router._get_provider("default").provider_name == "openai"
+    assert session.session_id is not None
+    assert session.current_plan is not None
+    assert len(session.messages) == 2
+
+    result = _handle_command(
+        "/model ollama/any",
+        session,
+        store,
+        provider_registry,
+        model_registry,
+        None,
+        router,
+        config,
+    )
+    assert result == "ok"
+    assert router._get_provider("default").provider_name == "ollama"
+    assert session.session_id is not None
+    assert session.current_plan is not None
+    assert len(session.messages) == 2
+
+
+def test_model_command_default_resets_router(monkeypatch, tmp_path):
+    from evoagent.cli.interactive import _handle_command
+    from evoagent.config.loader import load_config
+    from evoagent.conversation.session import ConversationSession
+    from evoagent.conversation.store import SessionStore
+    from evoagent.models.factory import MockLLMProvider
+    from evoagent.models.provider_registry import ProviderRegistry
+    from evoagent.models.registry import ModelRegistry
+    from evoagent.models.router import ModelRouter
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    session = ConversationSession()
+    store = SessionStore(sessions_dir=str(tmp_path / "sessions"))
+    provider_registry = ProviderRegistry()
+    model_registry = ModelRegistry()
+    router = ModelRouter(providers={
+        "planner": MockLLMProvider(),
+        "executor": MockLLMProvider(),
+        "critic": MockLLMProvider(),
+        "default": MockLLMProvider(),
+    })
+    config = load_config()
+
+    result = _handle_command(
+        "/model default",
+        session,
+        store,
+        provider_registry,
+        model_registry,
+        None,
+        router,
+        config,
+    )
+    assert result == "ok"
+    provider = router._get_provider("default")
+    assert provider.provider_name == "deepseek"
+
+
+def test_model_command_refresh(monkeypatch, tmp_path, capsys):
+    from evoagent.cli.interactive import _handle_command
+    from evoagent.config.loader import load_config
+    from evoagent.conversation.session import ConversationSession
+    from evoagent.conversation.store import SessionStore
+    from evoagent.models.factory import MockLLMProvider
+    from evoagent.models.provider_registry import ProviderRegistry
+    from evoagent.models.registry import ModelRegistry
+    from evoagent.models.router import ModelRouter
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    session = ConversationSession()
+    store = SessionStore(sessions_dir=str(tmp_path / "sessions"))
+    provider_registry = ProviderRegistry()
+    model_registry = ModelRegistry()
+    router = ModelRouter(providers={
+        "planner": MockLLMProvider(),
+        "executor": MockLLMProvider(),
+        "critic": MockLLMProvider(),
+        "default": MockLLMProvider(),
+    })
+    config = load_config()
+
+    result = _handle_command(
+        "/model refresh",
+        session,
+        store,
+        provider_registry,
+        model_registry,
+        None,
+        router,
+        config,
+    )
+    assert result == "ok"
+    captured = capsys.readouterr()
+    assert "Model registry refreshed." in captured.out
+
+
+def test_model_switch_refuses_when_tools_required(monkeypatch, tmp_path, capsys):
+    from evoagent.cli.interactive import _handle_command
+    from evoagent.conversation.session import ConversationSession
+    from evoagent.conversation.store import SessionStore
+    from evoagent.models.provider_registry import ProviderRegistry
+    from evoagent.models.registry import ModelDefinition, ModelRegistry
+
+    session = ConversationSession()
+    # Create a plan that requires a tool
+    from evoagent.planning.schema import ActionType, Plan, PlanStep
+    session.current_plan = Plan(task="Requires tool", steps=[PlanStep(goal="List files", action_type=ActionType.TOOL)])
+
+    store = SessionStore(sessions_dir=str(tmp_path / "sessions"))
+    provider_registry = ProviderRegistry()
+    model_registry = ModelRegistry()
+    # Register a model that explicitly does NOT support tools
+    md = ModelDefinition(provider="openai", model_id="no-tools", supports_tools=False, canonical_id="openai/no-tools")
+    model_registry.register(md)
+    # Sanity check: registry contains the model we just registered
+    stored = model_registry.get("openai/no-tools")
+    assert stored is not None
+    assert stored.supports_tools is False
+
+    from evoagent.config.loader import load_config
+    from evoagent.models.router import ModelRouter
+    router = ModelRouter(providers={})
+    config = load_config()
+    result = _handle_command("/model openai/no-tools", session, store, provider_registry, model_registry, None, router, config)
+    assert result == "ok"
+    captured = capsys.readouterr()
+    assert "does not support tools" in captured.out
+
+
+def test_session_command_resume_fork_reset_clear(tmp_path, capsys):
+    from evoagent.cli.interactive import _handle_command
+    from evoagent.conversation.session import ConversationSession
+    from evoagent.conversation.store import SessionStore
+    from evoagent.planning.schema import Plan
+
+    store = SessionStore(sessions_dir=str(tmp_path / "sessions"))
+
+    original = ConversationSession()
+    original.append_user_message("hello")
+    original.append_assistant_message("hi")
+    original.current_plan = Plan(task="Test task", steps=[])
+    store.save(original)
+
+    session = ConversationSession()
+    result = _handle_command("/sessions", session, store, None, None, None, None, None)
+    assert result == "ok"
+    captured = capsys.readouterr()
+    assert "Recent sessions:" in captured.out
+    assert original.session_id in captured.out
+
+    result = _handle_command("/resume latest", session, store, None, None, None, None, None)
+    assert result == "ok"
+    assert session.session_id == original.session_id
+    assert len(session.messages) == 2
+
+    previous_id = session.session_id
+    result = _handle_command("/fork", session, store, None, None, None, None, None)
+    assert result == "ok"
+    assert session.session_id != previous_id
+    assert len(session.messages) == 2
+    assert session.current_plan is not None
+    assert session.current_plan.task == "Test task"
+
+    # /reset should clear history and state
+    session.append_user_message("temp")
+    result = _handle_command("/reset", session, store, None, None, None, None, None)
+    assert result == "ok"
+    assert len(session.messages) == 0
+    assert session.current_plan is None
+    assert session.turns == []
+
+    # /new should create a fresh session without prior messages
+    session.append_user_message("temp2")
+    old_id = session.session_id
+    result = _handle_command("/new", session, store, None, None, None, None, None)
+    assert result == "ok"
+    assert session.session_id != old_id
+    assert len(session.messages) == 0
+
+    session.append_user_message("temp3")
+    result = _handle_command("/clear", session, store, None, None, None, None, None)
+    assert result == "ok"
+    assert len(session.messages) == 0
 
 
 def test_reasoning_content_roundtrip():

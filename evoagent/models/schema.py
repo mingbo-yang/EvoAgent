@@ -87,6 +87,10 @@ class ModelConfig(BaseModel):
     """Configuration for a single model provider instance."""
 
     provider: str = Field(default="deepseek", description="Provider name.")
+    adapter_type: str | None = Field(
+        default=None,
+        description="Adapter type for provider implementation.",
+    )
     model: str = Field(default="deepseek-chat", description="Model name.")
     base_url: str = Field(
         default="https://api.deepseek.com/v1",

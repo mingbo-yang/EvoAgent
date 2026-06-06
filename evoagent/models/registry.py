@@ -85,6 +85,14 @@ class ModelRegistry:
     def list_all(self) -> list[ModelDefinition]:
         return sorted(self._models.values(), key=lambda m: m.canonical_id)
 
+    def refresh(self) -> None:
+        """Refresh cached model metadata.
+
+        This is a placeholder for provider-driven model discovery. When no
+        discovery backend is configured, the method is a no-op.
+        """
+        return None
+
     def mark_recent(self, canonical_id: str) -> None:
         if canonical_id in self._recent:
             self._recent.remove(canonical_id)

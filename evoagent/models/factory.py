@@ -86,12 +86,21 @@ class ProviderFactory:
         Raises:
             ModelProviderError: If the provider type is unknown.
         """
-        provider = config.provider.lower()
+        provider_type = getattr(config, "adapter_type", None)
+        provider = provider_type.lower() if provider_type else config.provider.lower()
 
         if provider == "deepseek":
             return DeepSeekProvider(config)
 
-        if provider == "openai_compatible":
+        if provider in (
+            "openai",
+            "openai_compatible",
+            "anthropic",
+            "gemini",
+            "mistral",
+            "xai",
+            "ollama",
+        ):
             return OpenAICompatibleProvider(config)
 
         if provider == "mock":

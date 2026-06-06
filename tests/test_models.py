@@ -148,10 +148,36 @@ def test_factory_creates_mock():
     assert isinstance(provider, MockLLMProvider)
 
 
+def test_factory_creates_openai_provider(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    config = ModelConfig(
+        provider="openai",
+        model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    provider = ProviderFactory.create(config)
+    assert provider.provider_name == "openai"
+
+
 def test_factory_unknown_provider():
     config = ModelConfig(provider="nonexistent")
     with pytest.raises(ModelProviderError, match="Unknown provider"):
         ProviderFactory.create(config)
+
+
+def test_factory_creates_custom_openai_compatible_provider(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    config = ModelConfig(
+        provider="custom-api",
+        adapter_type="openai_compatible",
+        model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    provider = ProviderFactory.create(config)
+    assert provider.provider_name == "custom-api"
+    assert type(provider).__name__ == "OpenAICompatibleProvider"
 
 
 def test_factory_litellm_not_implemented():
