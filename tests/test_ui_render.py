@@ -77,9 +77,12 @@ def test_render_footer_and_messages():
     R.error(c, "broken")
     out = c.file.getvalue()
     assert "4.2s" in out
-    assert "22,434 tokens" in out
+    assert "22.4k tokens" in out
     assert "informational" in out
     assert "broken" in out
+    # footer must not start with a stray separator dot
+    footer_line = out.splitlines()[0]
+    assert not footer_line.lstrip().startswith("·")
 
 
 def test_render_kv_table():
@@ -88,3 +91,41 @@ def test_render_kv_table():
     out = c.file.getvalue()
     assert "model" in out
     assert "deepseek:chat" in out
+
+
+def test_mode_card():
+    c = _console()
+    R.mode_card(c, "plan")
+    out = c.file.getvalue()
+    assert "mode" in out
+    assert "plan" in out
+    # includes a one-line description of the mode
+    assert "plan" in out and "ask before editing" in out
+
+
+def test_model_card():
+    c = _console()
+    R.model_card(c, "deepseek/deepseek-chat", "alias: ds")
+    out = c.file.getvalue()
+    assert "model" in out
+    assert "deepseek/deepseek-chat" in out
+    assert "alias: ds" in out
+
+
+def test_live_tool_reporter_finishes_with_result():
+    c = _console()
+    rep = R.LiveToolReporter(c)
+    rep.start("run_tests", {"command": "pytest -q"})
+    rep.finish("run_tests", "FAIL - 1 failed", success=False)
+    out = c.file.getvalue()
+    assert "run_tests" in out
+    assert "FAIL" in out
+
+
+def test_live_tool_reporter_handles_no_args():
+    c = _console()
+    rep = R.LiveToolReporter(c)
+    rep.start("git_status")
+    rep.finish("git_status", "clean", success=True)
+    out = c.file.getvalue()
+    assert "git_status" in out

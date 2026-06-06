@@ -52,7 +52,8 @@ def _mascot() -> list[Text]:
 
 
 def render_banner(version: str, model_label: str, mode: str, workspace: str,
-                  context_pct: int = 0, billing: str = "API") -> Panel:
+                  context_pct: int = 0, billing: str = "API",
+                  width: int | None = None) -> Panel:
     """Render the welcome banner as a single cohesive rounded card.
 
     Args:
@@ -62,9 +63,11 @@ def render_banner(version: str, model_label: str, mode: str, workspace: str,
         workspace: Current workspace path.
         context_pct: Context usage percentage.
         billing: Billing type.
+        width: Available width (e.g. ``console.width``). Falls back to the
+            detected terminal size so the card always tracks the real width.
     """
-    term_width = shutil.get_terminal_size((80, 24)).columns
-    panel_width = min(term_width, 88)
+    avail = width if width else shutil.get_terminal_size((80, 24)).columns
+    panel_width = max(46, min(avail, 110))
     inner = panel_width - 2 - 2 * _PAD  # borders + horizontal padding
     is_narrow = panel_width < 72
 

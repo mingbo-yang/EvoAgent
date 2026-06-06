@@ -30,6 +30,21 @@ _debug_mode: bool = False
 _verbose_level: str = "compact"
 
 
+def _model_display(selection: str, config) -> str:
+    """Resolve a model selection to a friendly display name.
+
+    'default'/'mock' resolve to the configured default model's name (so the
+    prompt shows e.g. 'deepseek-chat' instead of the literal 'default'); a
+    'provider/model' selection shows the model part.
+    """
+    if selection in ("default", "mock"):
+        try:
+            return config.models.default.model
+        except Exception:
+            return selection
+    return selection.split("/")[-1] if "/" in selection else selection
+
+
 def _make_model_config(
     selection: str,
     providers: ProviderRegistry,
@@ -133,11 +148,12 @@ async def run_interactive():
         console.print(
             render_banner(
                 version,
-                _current_model_selection,
+                _model_display(_current_model_selection, config),
                 session.mode.value,
                 str(workspace),
                 context_pct=8,
-                billing="API Billing" if _current_model_selection != "mock" else "Free",
+                billing="API" if _current_model_selection != "mock" else "Free",
+                width=console.width,
             )
         )
     elif sys.stdout.isatty():
@@ -152,18 +168,21 @@ async def run_interactive():
     from evoagent.cli.ui.event_bus import EventBus
     from evoagent.cli.ui.events import UIEventType
     event_bus = EventBus()
+    _tool_reporter = (
+        _render.LiveToolReporter(console) if (HAS_RICH and console) else None
+    )
     async def _on_tool(evt):
         name = evt.payload.get("tool_name", "?")
         if evt.type == UIEventType.TOOL_CALL_STARTED:
-            if HAS_RICH and console:
-                _render.tool_running(console, name, evt.payload.get("arguments"))
+            if _tool_reporter is not None:
+                _tool_reporter.start(name, evt.payload.get("arguments"))
             else:
                 print(f"  * {name}")
         else:
             out_full = evt.payload.get("output", "")
             ok = evt.type != UIEventType.TOOL_CALL_FAILED
-            if HAS_RICH and console:
-                _render.tool_done(console, name, out_full, success=ok)
+            if _tool_reporter is not None:
+                _tool_reporter.finish(name, out_full, success=ok)
             else:
                 glyph = "+" if ok else "x"
                 print(f"  {glyph} {name}")
@@ -206,14 +225,12 @@ async def run_interactive():
     HAS_PT = False
     try:
         from evoagent.cli.ui.prompt import create_prompt_session
-        bottom = (
-            f"{session.mode.value} · {_current_model_selection} · "
-            f"msgs:{len(session.messages)} · turns:{len(session.turns)}"
-        )
         pt_session = create_prompt_session(
-            mode=session.mode.value,
-            model_label=_current_model_selection,
-            bottom_text=bottom,
+            get_mode=lambda: session.mode.value,
+            get_model=lambda: _model_display(_current_model_selection, config),
+            get_status=lambda: (
+                f"{len(session.messages)} msgs · {len(session.turns)} turns"
+            ),
         )
         HAS_PT = True
     except ImportError:
@@ -221,15 +238,12 @@ async def run_interactive():
 
     while True:
         try:
-            label = _current_model_selection
             if HAS_PT and pt_session and sys.stdout.isatty():
                 user_input = await pt_session.prompt_async()
             elif HAS_RICH and console:
                 prompt = Text()
-                prompt.append("  ", style="")
+                prompt.append("  ")
                 prompt.append(session.mode.value, style=f"evo.{session.mode.value}")
-                prompt.append(" · ", style="evo.faint")
-                prompt.append(label, style="evo.muted")
                 prompt.append("  ❯ ", style="evo.prompt")
                 console.print(prompt, end="")
                 sys.stdout.flush()
@@ -240,7 +254,7 @@ async def run_interactive():
                     break
                 user_input = line.strip()
             else:
-                print(f"EvoAgent[{session.mode.value}][{label}]> ", end="")
+                print(f"EvoAgent[{session.mode.value}]> ", end="")
                 sys.stdout.flush()
                 line = sys.stdin.readline()
                 if not line:  # EOF
@@ -396,19 +410,33 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
         return "ok"
 
     if command == "/model":
-        return _handle_model(parts, providers, models, router, config, session)
+        return _handle_model(parts, providers, models, router, config, session,
+                             console=console)
 
     if command == "/mode":
         if len(parts) > 1:
             mode_str = parts[1].lower()
             if mode_str in ("default", "plan", "auto"):
                 session.set_mode(AgentMode(mode_str))
-                print(f"Mode: {session.mode.value}")
+                if console:
+                    from evoagent.cli.ui import render as R
+                    R.mode_card(console, session.mode.value)
+                else:
+                    print(f"Mode: {session.mode.value}")
             else:
-                print(f"Unknown mode: {mode_str}. Use default, plan, or auto.")
+                if console:
+                    from evoagent.cli.ui import render as R
+                    R.warn(console, f"Unknown mode '{mode_str}' — use default, plan, or auto.")
+                else:
+                    print(f"Unknown mode: {mode_str}. Use default, plan, or auto.")
         else:
-            print(f"Current mode: {session.mode.value}")
-            print("Available: default, plan, auto")
+            if console:
+                from evoagent.cli.ui import render as R
+                R.kv(console, [("current", session.mode.value),
+                               ("available", "default · plan · auto")])
+            else:
+                print(f"Current mode: {session.mode.value}")
+                print("Available: default, plan, auto")
         return "ok"
 
     if command == "/plan":
@@ -706,17 +734,35 @@ def _handle_model(
     router: ModelRouter | None = None,
     config: EvoAgentConfig | None = None,
     session: ConversationSession | None = None,
+    console=None,
 ) -> str:
     global _current_model_selection
     if len(parts) == 1:
-        print(f"Current: {_current_model_selection}")
-        if providers:
-            for pid, status in providers.status_summary().items():
-                print(f"  {pid:20s} {status}")
-        print(
-            "Usage: /model list | /model <provider>/<id> | /model <alias> | "
-            "/model status | /model refresh | /model default"
-        )
+        if console:
+            from evoagent.cli.ui import render as R
+            R.kv(console, [("current", _current_model_selection)])
+            if providers:
+                rows = list(providers.status_summary().items())
+                if rows:
+                    console.print()
+                    R.section(console, "Providers")
+                    R.kv(console, rows)
+            console.print(
+                __import__("rich.text", fromlist=["Text"]).Text(
+                    "\n  /model list  ·  /model <provider>/<id>  ·  "
+                    "/model status  ·  /model default",
+                    style="evo.faint",
+                )
+            )
+        else:
+            print(f"Current: {_current_model_selection}")
+            if providers:
+                for pid, status in providers.status_summary().items():
+                    print(f"  {pid:20s} {status}")
+            print(
+                "Usage: /model list | /model <provider>/<id> | /model <alias> | "
+                "/model status | /model refresh | /model default"
+            )
         return "ok"
 
     sub = parts[1].lower()
@@ -746,25 +792,25 @@ def _handle_model(
             if provider:
                 _bind_provider_to_router(router, provider)
                 _current_model_selection = "default"
-                print("Model: default")
+                _model_ok(console, "default")
                 return "ok"
-            print("Failed to create default provider. Check API key or provider configuration.")
+            _model_fail(console, "Failed to create default provider. "
+                        "Check API key or provider configuration.")
             return "ok"
         _current_model_selection = "default"
-        print("Model: default")
+        _model_ok(console, "default")
         return "ok"
 
     target = parts[1]
+    alias = None
     if "/" not in target and models:
         resolved = models.resolve(target)
         if resolved:
+            alias = parts[1]
             target = resolved
-            print(f"Model: {target} (alias: {parts[1]})")
         else:
-            print(f"Unknown: {parts[1]}")
+            _model_fail(console, f"Unknown model '{parts[1]}'.")
             return "ok"
-    else:
-        print(f"Model: {target}")
 
     if router and config:
         # Validate model capabilities before switching
@@ -785,15 +831,33 @@ def _handle_model(
             except Exception:
                 needs_tool = False
             if needs_tool and not model_def.supports_tools:
-                print(
-                    "Cannot switch: target model does not support tools while current plan requires tools."
-                )
+                _model_fail(console, "Cannot switch: target model does not support "
+                            "tools while the current plan requires them.")
                 return "ok"
 
         provider = _build_provider(target, providers, models, config)
         if provider is None:
-            print("Failed to create provider. Check API key, base_url, or provider configuration.")
+            _model_fail(console, "Failed to create provider. "
+                        "Check API key, base_url, or provider configuration.")
             return "ok"
         _bind_provider_to_router(router, provider)
     _current_model_selection = target
+    _model_ok(console, target, alias=alias)
     return "ok"
+
+
+def _model_ok(console, label: str, alias: str | None = None) -> None:
+    detail = f"alias: {alias}" if alias else ""
+    if console:
+        from evoagent.cli.ui import render as R
+        R.model_card(console, label, detail)
+    else:
+        print(f"Model: {label}" + (f" (alias: {alias})" if alias else ""))
+
+
+def _model_fail(console, msg: str) -> None:
+    if console:
+        from evoagent.cli.ui import render as R
+        R.error(console, msg)
+    else:
+        print(msg)

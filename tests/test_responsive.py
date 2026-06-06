@@ -49,3 +49,29 @@ def test_banner_version_displayed():
     panel = render_banner("v0.5.0", "deepseek:chat", "default", "/ws", 8)
     title = str(panel.title) if hasattr(panel, 'title') else ""
     assert "0.5.0" in title
+
+
+def test_banner_tracks_width():
+    """Banner width follows the provided width and caps at a readable maximum."""
+    import io
+
+    from rich.cells import cell_len
+    from rich.console import Console
+
+    from evoagent.cli.ui.theme import EVO_THEME
+
+    def _border_width(w):
+        c = Console(theme=EVO_THEME, force_terminal=True, width=w, file=io.StringIO())
+        c.print(render_banner("v1.0.0", "deepseek-chat", "default", "/ws", 8,
+                              width=w))
+        import re
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", c.file.getvalue())
+        top = next(ln for ln in plain.splitlines() if ln.startswith("╭"))
+        return cell_len(top)
+
+    narrow = _border_width(64)
+    wide = _border_width(96)
+    capped = _border_width(140)
+    assert narrow == 64
+    assert wide == 96
+    assert capped == 110  # readability cap
