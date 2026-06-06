@@ -2,7 +2,14 @@
 
 from pathlib import Path
 
-from evoagent.tools.file_tools import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from evoagent.tools.file_tools import (
+    ApplyPatchTool,
+    EditFileTool,
+    ListDirTool,
+    MultiEditTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 from evoagent.tools.git_tools import GitDiffTool, GitStatusTool
 from evoagent.tools.python_tools import PythonTool
 from evoagent.tools.registry import ToolRegistry
@@ -29,6 +36,8 @@ def create_builtin_registry(workspace: Path, auto_approve: bool = False) -> Tool
     registry.register(ReadFileTool(workspace))
     registry.register(WriteFileTool(workspace))
     registry.register(EditFileTool(workspace))
+    registry.register(MultiEditTool(workspace))
+    registry.register(ApplyPatchTool(workspace))
     registry.register(ListDirTool(workspace))
     registry.register(GrepTool(workspace))
     registry.register(BashTool(workspace, auto_approve=auto_approve))

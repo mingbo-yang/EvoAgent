@@ -31,9 +31,33 @@ class WriteFileInput(BaseModel):
 
 class EditFileInput(BaseModel):
     path: str = Field(..., description="File path relative to workspace.")
-    old_text: str = Field(..., description="Exact text to find and replace.")
+    old_text: str = Field(..., description="Text to find and replace. Matching tolerates "
+                          "trailing/leading whitespace differences if an exact match fails.")
     new_text: str = Field(..., description="Text to substitute in place of old_text.")
     replace_all: bool = Field(default=False, description="Replace all occurrences.")
+
+
+class SingleEdit(BaseModel):
+    old_text: str = Field(..., description="Text to find.")
+    new_text: str = Field(..., description="Replacement text.")
+    replace_all: bool = Field(default=False, description="Replace all occurrences.")
+
+
+class MultiEditInput(BaseModel):
+    path: str = Field(..., description="File path relative to workspace.")
+    edits: list[SingleEdit] = Field(..., description="Edits applied in order, atomically. "
+                                    "If any edit fails, the file is left unchanged.")
+
+
+class PatchFileEdits(BaseModel):
+    path: str = Field(..., description="File path relative to workspace.")
+    edits: list[SingleEdit] = Field(..., description="Search/replace edits for this file.")
+
+
+class ApplyPatchInput(BaseModel):
+    files: list[PatchFileEdits] = Field(..., description="Per-file edit groups applied "
+                                       "atomically across ALL files: either every file's "
+                                       "edits apply or none are written.")
 
 
 class ListDirInput(BaseModel):
@@ -114,7 +138,9 @@ class WriteFileTool(BaseTool):
 
 class EditFileTool(BaseTool):
     name = "edit_file"
-    description = "Find and replace text in a file. By default, old_text must be unique in the file."
+    description = ("Find and replace text in a file. old_text must be unique unless "
+                   "replace_all=true. If an exact match fails, matching falls back to "
+                   "tolerating trailing/leading whitespace differences.")
     input_schema = EditFileInput
     risk_level = RiskLevel.MEDIUM
 
@@ -123,33 +149,133 @@ class EditFileTool(BaseTool):
 
     async def run(self, path: str, old_text: str, new_text: str,
                   replace_all: bool = False) -> ToolResult:
+        from evoagent.tools.editing import compute_edit
         try:
             resolved = resolve_workspace_path(path, self.workspace, must_exist=True)
             content = resolved.read_text(encoding="utf-8")
-            count = content.count(old_text)
-            if count == 0:
+            res = compute_edit(content, old_text, new_text, replace_all)
+            if not res.success:
+                err = res.error
+                if res.hint:
+                    err += f" {res.hint}"
                 return ToolResult(
                     call_id=generate_id("call"), name=self.name, success=False,
-                    error=f"old_text not found in {resolved}",
+                    error=f"{err} (in {resolved})",
                 )
-            if not replace_all and count > 1:
-                return ToolResult(
-                    call_id=generate_id("call"), name=self.name, success=False,
-                    error=f"old_text found {count} times in {resolved}. "
-                          "Use replace_all=true or make old_text unique.",
-                )
-            new_content = content.replace(old_text, new_text)
-            resolved.write_text(new_content, encoding="utf-8")
-            replacements = count if replace_all else 1
+            resolved.write_text(res.new_content, encoding="utf-8")
+            note = "" if res.strategy == "exact" else f" (matched via {res.strategy})"
             return ToolResult(
                 call_id=generate_id("call"), name=self.name, success=True,
-                output=f"Replaced {replacements} occurrence(s) in {resolved}",
-                metadata={"path": str(resolved), "replacements": replacements},
+                output=f"Replaced {res.count} occurrence(s) in {resolved}{note}",
+                metadata={"path": str(resolved), "replacements": res.count,
+                          "strategy": res.strategy},
             )
         except Exception as e:
             return ToolResult(
                 call_id=generate_id("call"), name=self.name, success=False, error=str(e),
             )
+
+
+class MultiEditTool(BaseTool):
+    name = "multi_edit"
+    description = ("Apply several find/replace edits to a single file atomically, in order. "
+                   "If any edit fails, the file is left completely unchanged. Use this for "
+                   "multiple related changes to one file.")
+    input_schema = MultiEditInput
+    risk_level = RiskLevel.MEDIUM
+
+    def __init__(self, workspace: Path):
+        self.workspace = workspace
+
+    async def run(self, path: str, edits: list) -> ToolResult:
+        from evoagent.tools.editing import Edit, apply_edits
+        try:
+            resolved = resolve_workspace_path(path, self.workspace, must_exist=True)
+            content = resolved.read_text(encoding="utf-8")
+            edit_objs = [Edit(old_text=e["old_text"], new_text=e["new_text"],
+                              replace_all=e.get("replace_all", False))
+                         if isinstance(e, dict)
+                         else Edit(old_text=e.old_text, new_text=e.new_text,
+                                   replace_all=getattr(e, "replace_all", False))
+                         for e in edits]
+            if not edit_objs:
+                return ToolResult(call_id=generate_id("call"), name=self.name,
+                                  success=False, error="No edits provided.")
+            ok, new_content, strategies, error = apply_edits(content, edit_objs)
+            if not ok:
+                return ToolResult(call_id=generate_id("call"), name=self.name,
+                                  success=False, error=f"{error} (in {resolved})")
+            resolved.write_text(new_content, encoding="utf-8")
+            return ToolResult(
+                call_id=generate_id("call"), name=self.name, success=True,
+                output=f"Applied {len(edit_objs)} edit(s) to {resolved}",
+                metadata={"path": str(resolved), "edits": len(edit_objs),
+                          "strategies": strategies},
+            )
+        except Exception as e:
+            return ToolResult(call_id=generate_id("call"), name=self.name,
+                              success=False, error=str(e))
+
+
+class ApplyPatchTool(BaseTool):
+    name = "apply_patch"
+    description = ("Apply find/replace edits across MULTIPLE files atomically. Either every "
+                   "file's edits apply cleanly or nothing is written. Use this for changes "
+                   "that must land together (e.g. renaming a symbol across files).")
+    input_schema = ApplyPatchInput
+    risk_level = RiskLevel.MEDIUM
+
+    def __init__(self, workspace: Path):
+        self.workspace = workspace
+
+    async def run(self, files: list) -> ToolResult:
+        from evoagent.tools.editing import Edit, FileEdits, compute_multifile
+
+        def _to_edits(raw) -> list:
+            out = []
+            for e in raw:
+                if isinstance(e, dict):
+                    out.append(Edit(old_text=e["old_text"], new_text=e["new_text"],
+                                    replace_all=e.get("replace_all", False)))
+                else:
+                    out.append(Edit(old_text=e.old_text, new_text=e.new_text,
+                                    replace_all=getattr(e, "replace_all", False)))
+            return out
+
+        try:
+            # Resolve all paths first (containment + existence) so a bad path
+            # aborts before any write.
+            file_edits: list = []
+            resolved_map: dict[str, Path] = {}
+            for f in files:
+                path = f["path"] if isinstance(f, dict) else f.path
+                raw_edits = f["edits"] if isinstance(f, dict) else f.edits
+                resolved = resolve_workspace_path(path, self.workspace, must_exist=True)
+                resolved_map[path] = resolved
+                file_edits.append(FileEdits(path=path, edits=_to_edits(raw_edits)))
+            if not file_edits:
+                return ToolResult(call_id=generate_id("call"), name=self.name,
+                                  success=False, error="No files provided.")
+
+            def read_fn(path: str) -> str:
+                return resolved_map[path].read_text(encoding="utf-8")
+
+            ok, new_contents, error = compute_multifile(read_fn, file_edits)
+            if not ok:
+                return ToolResult(call_id=generate_id("call"), name=self.name,
+                                  success=False, error=f"Patch not applied: {error}")
+            # All edits computed successfully — now write atomically.
+            for path, content in new_contents.items():
+                resolved_map[path].write_text(content, encoding="utf-8")
+            return ToolResult(
+                call_id=generate_id("call"), name=self.name, success=True,
+                output=f"Applied patch to {len(new_contents)} file(s): "
+                       + ", ".join(str(resolved_map[p]) for p in new_contents),
+                metadata={"files": [str(resolved_map[p]) for p in new_contents]},
+            )
+        except Exception as e:
+            return ToolResult(call_id=generate_id("call"), name=self.name,
+                              success=False, error=str(e))
 
 
 class ListDirTool(BaseTool):

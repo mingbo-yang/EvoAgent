@@ -41,7 +41,7 @@ def classify_tool(name: str, arguments: dict) -> tuple[str, str, str]:
     args = arguments or {}
     if n in ("bash", "shell", "run_shell", "execute_bash", "run_command"):
         return "shell", str(args.get("command", "")), "medium"
-    if n in ("write_file", "edit_file", "apply_patch", "create_file", "delete_file"):
+    if n in ("write_file", "edit_file", "multi_edit", "apply_patch", "create_file", "delete_file"):
         return "file_write", str(args.get("path", "") or args.get("file_path", "")), "medium"
     if n in ("read_file", "list_directory", "grep", "glob", "search", "git_status", "git_diff"):
         return "file_read", str(args.get("path", "") or args.get("pattern", "")), "low"
