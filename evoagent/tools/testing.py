@@ -43,6 +43,15 @@ _MAX_OUTPUT_CHARS = 16_000
 _COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|error|errors|skipped|xfailed|xpassed)")
 # pytest failing-test node ids, e.g. "FAILED tests/test_x.py::test_y - assert ..."
 _FAILED_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+# Terminal colour/control sequences a child runner may emit (e.g. when
+# FORCE_COLOR is set); stripped before parsing so they cannot corrupt the
+# summary, counts, or failing-node detection.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
 
 
 def _is_test_command(command: str) -> bool:
@@ -117,7 +126,9 @@ class RunTestsTool(BaseTool):
         combined = result.stdout
         if result.stderr:
             combined += ("\n[stderr]\n" + result.stderr) if combined else result.stderr
-        combined = combined.strip()
+        # Strip terminal colour codes so a colourised child runner (FORCE_COLOR)
+        # cannot break summary/count/failing-node parsing or the FAIL/PASS header.
+        combined = _strip_ansi(combined).strip()
 
         counts = _parse_counts(combined)
         failing = _FAILED_RE.findall(combined)
