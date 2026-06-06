@@ -111,20 +111,46 @@ def _text_chunks(path: str, source: str, window: int = 80, overlap: int = 20) ->
 
 
 class CodeRetriever:
-    """Deterministic code-chunk index over a workspace."""
+    """Deterministic code-chunk index over a workspace.
 
-    def __init__(self, workspace: str | Path, max_files: int = 600):
+    Keyword scoring is always the primary (deterministic) signal. When
+    ``use_embeddings`` is True, chunk/query embeddings from a local hashing
+    embedding model are blended in as a secondary signal (and can surface
+    semantically-related chunks the keyword index missed), keeping retrieval
+    deterministic-first.
+    """
+
+    def __init__(self, workspace: str | Path, max_files: int = 600,
+                 use_embeddings: bool = False, embedding_model: object | None = None,
+                 embedding_weight: float = 3.0, vector_store: object | None = None):
         self.workspace = Path(workspace).resolve()
         self.max_files = max_files
         self._kw = KeywordRetriever()
         self._chunks: dict[str, CodeChunk] = {}
         self._built = False
+        self.use_embeddings = use_embeddings
+        self.embedding_weight = embedding_weight
+        self._embedder = None
+        self._vectors = None
+        if use_embeddings:
+            from evoagent.retrieval.embeddings import HashingEmbeddingModel
+            from evoagent.retrieval.vector_store import PersistentVectorStore
+            self._embedder = (
+                embedding_model if embedding_model is not None
+                else HashingEmbeddingModel()
+            )
+            self._vectors = (
+                vector_store if vector_store is not None else PersistentVectorStore()
+            )
 
     def build_index(self) -> int:
         """Scan, chunk, and index the workspace. Returns the chunk count."""
         self._kw.clear()
         self._chunks.clear()
+        if self._vectors is not None:
+            self._vectors.clear()
         items: list[dict] = []
+        vec_items: list[dict] = []
         count = 0
         for fp in sorted(self.workspace.rglob("*")):
             if any(part in SKIP_DIRS for part in fp.parts):
@@ -150,8 +176,13 @@ class CodeRetriever:
                 # they contribute to keyword scoring (path/name matters most).
                 header_tokens = _split_identifier(rel) + _split_identifier(ch.name)
                 header = " ".join(header_tokens)
-                items.append({"id": cid, "text": f"{header}\n{header}\n{ch.text}"})
+                blob = f"{header}\n{header}\n{ch.text}"
+                items.append({"id": cid, "text": blob})
+                if self._embedder is not None:
+                    vec_items.append({"id": cid, "vector": self._embedder.embed_text(blob)})
         self._kw.add_items(items)
+        if self._vectors is not None and vec_items:
+            self._vectors.add_many(vec_items)
         self._built = True
         return len(self._chunks)
 
@@ -162,12 +193,22 @@ class CodeRetriever:
         if not query.strip():
             return []
         raw = self._kw.search(query, top_k=top_k * 3)
+        # Candidate scores keyed by chunk id (keyword score is primary).
+        cand: dict[str, float] = {hit["id"]: float(hit["score"]) for hit in raw}
+
+        if self._embedder is not None and self._vectors is not None and len(self._vectors):
+            q_vec = self._embedder.embed_text(query)
+            for hit in self._vectors.search(q_vec, top_k=top_k * 3):
+                # Cosine in [-1, 1]; only positive similarity contributes.
+                sim = max(0.0, float(hit["score"]))
+                cand[hit["id"]] = cand.get(hit["id"], 0.0) + self.embedding_weight * sim
+
         query_words = set(_split_identifier(query)) | {
             w.lower() for w in re.findall(r"\w+", query)
         }
         scored: list[CodeChunk] = []
-        for hit in raw:
-            ch = self._chunks.get(hit["id"])
+        for cid, base in cand.items():
+            ch = self._chunks.get(cid)
             if ch is None:
                 continue
             bonus = 0.0
@@ -177,7 +218,7 @@ class CodeRetriever:
                 bonus += 3.0
             if query_words & path_words:
                 bonus += 1.0
-            ch.score = float(hit["score"]) + bonus
+            ch.score = base + bonus
             scored.append(ch)
         scored.sort(key=lambda c: (c.score, -c.start_line), reverse=True)
         return scored[:top_k]
