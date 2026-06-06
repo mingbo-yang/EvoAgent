@@ -155,6 +155,40 @@ def kv(console: Console, rows: list[tuple[str, str]], indent: int = 1) -> None:
     console.print(grid)
 
 
+def history_timeline(console: Console, turns: list, limit: int = 10) -> None:
+    """Render recent conversation turns as a compact Copilot-style timeline."""
+    if not turns:
+        info(console, "No conversation history yet.")
+        return
+
+    shown = turns[-limit:]
+    for idx, turn in enumerate(shown, 1):
+        q = (getattr(turn, "user_message", "") or "").replace("\n", " ").strip()
+        a = (getattr(turn, "assistant_response", "") or "").replace("\n", " ").strip()
+        tools = getattr(turn, "tool_calls_count", 0) or 0
+        if len(q) > max(40, console.width - 10):
+            q = q[: max(39, console.width - 11)] + "…"
+        if len(a) > max(40, console.width - 10):
+            a = a[: max(39, console.width - 11)] + "…"
+
+        head = Text()
+        head.append(f"{sym('done')} ", style="evo.accent")
+        head.append(f"turn {idx}", style="evo.heading")
+        if tools:
+            head.append(f"  {tools} tool{'s' if tools != 1 else ''}", style="evo.faint")
+        console.print(head)
+
+        body = Text()
+        body.append(f"  {sym('tree_bar')} ", style="evo.faint")
+        body.append("Q ", style="evo.key")
+        body.append(q or "(empty)", style="evo.value")
+        body.append("\n")
+        body.append(f"  {sym('tree_bar')} ", style="evo.faint")
+        body.append("A ", style="evo.key")
+        body.append(a or "(no answer recorded)", style="evo.muted")
+        console.print(body)
+
+
 # ── Live tool spinner ─────────────────────────────────────────────────
 
 _MODE_DESC = {

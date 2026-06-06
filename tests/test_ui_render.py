@@ -17,7 +17,7 @@ def _console() -> Console:
 
 def test_symbols_returns_glyph():
     # Whatever the terminal, every known symbol resolves to a non-empty string.
-    for name in ("prompt", "ok", "fail", "running", "dot", "bullet", "spark"):
+    for name in ("prompt", "ok", "fail", "running", "done", "dot", "bullet", "spark"):
         assert symbols.sym(name)
 
 
@@ -129,3 +129,72 @@ def test_live_tool_reporter_handles_no_args():
     rep.finish("git_status", "clean", success=True)
     out = c.file.getvalue()
     assert "git_status" in out
+
+
+def test_history_timeline_empty_and_turns():
+    from evoagent.conversation.schema import TurnRecord
+
+    c = _console()
+    R.history_timeline(c, [])
+    assert "No conversation history" in c.file.getvalue()
+
+    c = _console()
+    turns = [
+        TurnRecord(
+            turn_id="t1",
+            user_message="How many files?",
+            assistant_response="There are 3 files.",
+            tool_calls_count=2,
+        )
+    ]
+    R.history_timeline(c, turns)
+    out = c.file.getvalue()
+    assert "turn 1" in out
+    assert "How many files?" in out
+    assert "There are 3 files." in out
+
+
+def test_prompt_history_path_parent_created(tmp_path):
+    from evoagent.cli.ui.prompt import create_prompt_session
+
+    history_path = tmp_path / "nested" / "history"
+    session = create_prompt_session(
+        get_mode=lambda: "default",
+        get_model=lambda: "deepseek-chat",
+        get_status=lambda: "0 msgs · 0 turns",
+        history_path=str(history_path),
+    )
+    assert session is not None
+    assert history_path.parent.exists()
+
+
+def test_approval_frame_width_with_long_command():
+    from prompt_toolkit.utils import get_cwidth
+
+    from evoagent.cli.ui.approval_view import render_approval_fragments
+
+    for width in (44, 54, 72, 88):
+        fragments = render_approval_fragments(
+            "Approve tool: bash",
+            "{'command': 'cd /mnt/huawei/ymb/agent && echo \"=== 本地最新提交 ===\" && "
+            "git log --oneline --decorate --stat --all --very-long-argument'}",
+            "Run 'bash' in workspace?",
+            "medium",
+            width=width,
+        )
+        lines = []
+        cur = ""
+        for _style, text in fragments:
+            if "\n" in text:
+                before, *rest = text.split("\n")
+                cur += before
+                lines.append(cur)
+                cur = rest[-1] if rest else ""
+            else:
+                cur += text
+        if cur:
+            lines.append(cur)
+        widths = {get_cwidth(line) for line in lines}
+        assert widths == {width}
+        assert lines[0].startswith("╭")
+        assert lines[-1].startswith("╰")

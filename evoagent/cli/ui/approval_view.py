@@ -3,10 +3,12 @@
 from dataclasses import dataclass
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 
 @dataclass
@@ -30,6 +32,99 @@ APPROVAL_STYLE = Style.from_dict({
 })
 
 
+def _clip(text: str, width: int) -> str:
+    """Clip text to a display width, adding an ellipsis when needed."""
+    text = str(text).replace("\n", " ")
+    if get_cwidth(text) <= width:
+        return text
+    out = ""
+    for ch in text:
+        if get_cwidth(out + ch + "…") > width:
+            return out + "…"
+        out += ch
+    return out
+
+
+def _pad_fragments(fragments, width: int):
+    """Right-pad formatted fragments to an exact display width."""
+    plain = "".join(text for _, text in fragments)
+    pad = max(0, width - get_cwidth(plain))
+    return fragments + [("class:frame", " " * pad)]
+
+
+def render_approval_fragments(
+    action: str,
+    command: str,
+    description: str = "",
+    risk: str = "medium",
+    *,
+    selected: int = 0,
+    width: int = 80,
+):
+    """Return prompt_toolkit formatted fragments for a complete approval frame."""
+    risk_key = risk if risk in ("low", "medium", "high") else "medium"
+    choices = [
+        ApprovalChoice("Yes", "yes", "approve this action once"),
+        ApprovalChoice("Yes, and don't ask again", "remember",
+                       "skip future prompts for this pattern"),
+        ApprovalChoice("No", "no", "deny and let the agent try another approach"),
+    ]
+    width = max(44, min(width, 88))
+    inner = width - 2
+    body_w = inner - 4
+
+    def line(parts=None):
+        parts = parts or []
+        return (
+            [("class:frame", "│  ")]
+            + _pad_fragments(parts, body_w)
+            + [("class:frame", "  │"), ("", "\n")]
+        )
+
+    title = " Permission required "
+    left = max(1, (inner - get_cwidth(title)) // 2)
+    right = inner - get_cwidth(title) - left
+    fragments = [
+        ("class:frame", "╭" + "─" * left),
+        ("class:title", title),
+        ("class:frame", "─" * right + "╮"),
+        ("", "\n"),
+    ]
+
+    fragments.extend(line([
+        ("class:title", _clip(action, max(12, body_w - 18))),
+        ("class:frame", "  ["),
+        (f"class:risk.{risk_key}", f"{risk_key} risk"),
+        ("class:frame", "]"),
+    ]))
+
+    cmd = str(command).replace("\n", " ")
+    first = _clip(cmd, body_w)
+    fragments.extend(line([("class:cmd", first)]))
+    rest = cmd[len(first.rstrip("…")):].lstrip()
+    if rest:
+        fragments.extend(line([("class:cmd", _clip(rest, body_w))]))
+
+    if description:
+        fragments.extend(line([("class:desc", _clip(description, body_w))]))
+    fragments.extend(line())
+
+    for i, c in enumerate(choices):
+        sel = i == selected
+        prefix = "❯ " if sel else "  "
+        style = "class:selected" if sel else "class:normal"
+        choice_text = _clip(
+            f"{prefix}{i + 1}. {c.label}   {c.description}",
+            body_w,
+        )
+        fragments.extend(line([(style, choice_text)]))
+
+    fragments.extend([
+        ("class:frame", "╰" + "─" * inner + "╯"),
+    ])
+    return fragments
+
+
 async def prompt_approval(action: str, command: str, description: str = "",
                           risk: str = "medium") -> str:
     """Show an arrow-key navigable approval prompt.
@@ -43,37 +138,16 @@ async def prompt_approval(action: str, command: str, description: str = "",
         ApprovalChoice("No", "no", "deny and let the agent try another approach"),
     ]
     selected = [0]
-    risk_key = risk if risk in ("low", "medium", "high") else "medium"
-
     def get_text():
-        lines = [
-            ("class:frame", "╭─ "),
-            ("class:title", "Permission required"),
-            ("class:frame", " " + "─" * max(2, 40 - len(action))),
-            ("", "\n"),
-            ("class:frame", "│  "),
-            ("class:title", action),
-            ("class:frame", "   ["),
-            (f"class:risk.{risk_key}", f"{risk_key} risk"),
-            ("class:frame", "]\n"),
-            ("class:frame", "│  "),
-            ("class:cmd", command[:72]),
-            ("", "\n"),
-        ]
-        if description:
-            lines += [("class:frame", "│  "),
-                      ("class:desc", description[:72]), ("", "\n")]
-        lines.append(("class:frame", "│\n"))
-        for i, c in enumerate(choices):
-            sel = i == selected[0]
-            prefix = "│  ❯ " if sel else "│    "
-            style = "class:selected" if sel else "class:normal"
-            lines.append(("class:frame", prefix))
-            lines.append((style, f"{i + 1}. {c.label}"))
-            lines.append(("class:desc", f"   {c.description}"))
-            lines.append(("", "\n"))
-        lines.append(("class:frame", "╰" + "─" * 44))
-        return lines
+        try:
+            cols = get_app().output.get_size().columns
+        except Exception:
+            cols = 80
+        return render_approval_fragments(
+            action, command, description, risk,
+            selected=selected[0],
+            width=cols - 2,
+        )
 
     kb = KeyBindings()
     done = [None]
@@ -110,7 +184,11 @@ async def prompt_approval(action: str, command: str, description: str = "",
         done[0] = "no"
         event.app.exit()
 
-    content = Window(content=FormattedTextControl(get_text), always_hide_cursor=False)
+    content = Window(
+        content=FormattedTextControl(get_text),
+        always_hide_cursor=False,
+        wrap_lines=False,
+    )
     app = Application(layout=Layout(HSplit([content])), key_bindings=kb,
                       style=APPROVAL_STYLE, full_screen=False)
 

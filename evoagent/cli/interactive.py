@@ -171,8 +171,32 @@ async def run_interactive():
     _tool_reporter = (
         _render.LiveToolReporter(console) if (HAS_RICH and console) else None
     )
+    _thinking = {"status": None}
+
+    def _start_thinking() -> None:
+        if not (HAS_RICH and console) or _thinking["status"] is not None:
+            return
+        try:
+            _thinking["status"] = console.status(
+                "thinking", spinner="dots", spinner_style="evo.spinner"
+            )
+            _thinking["status"].start()
+        except Exception:
+            _thinking["status"] = None
+
+    def _stop_thinking() -> None:
+        status = _thinking.get("status")
+        if status is None:
+            return
+        try:
+            status.stop()
+        except Exception:
+            pass
+        _thinking["status"] = None
+
     async def _on_tool(evt):
         name = evt.payload.get("tool_name", "?")
+        _stop_thinking()
         if evt.type == UIEventType.TOOL_CALL_STARTED:
             if _tool_reporter is not None:
                 _tool_reporter.start(name, evt.payload.get("arguments"))
@@ -344,14 +368,20 @@ async def run_interactive():
         try:
             t0 = __import__('time').monotonic()
             if HAS_RICH and console:
-                # Use streaming path — no status() to keep toolbar visible
+                # Show a lightweight thinking indicator until the first tool
+                # event or visible model output arrives.
                 response_parts = []
-                async for chunk in runtime.handle_user_message_stream(user_input):
-                    if chunk.startswith("·"):
-                        if chunk.strip():
-                            _render.reasoning(console, chunk)
-                    else:
-                        response_parts.append(chunk)
+                _start_thinking()
+                try:
+                    async for chunk in runtime.handle_user_message_stream(user_input):
+                        _stop_thinking()
+                        if chunk.startswith("·"):
+                            if chunk.strip():
+                                _render.reasoning(console, chunk)
+                        else:
+                            response_parts.append(chunk)
+                finally:
+                    _stop_thinking()
                 response = "".join(response_parts)
                 elapsed = __import__('time').monotonic() - t0
                 tc = sum(1 for m in session.messages if m.role.value == "tool")
@@ -554,7 +584,7 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
 
     if command == "/help":
         groups = [
-            ("Session", "/new  /resume  /fork  /clear  /reset  /exit"),
+            ("Session", "/new  /resume  /fork  /history  /clear  /reset  /exit"),
             ("Runtime", "/mode  /model  /plan  /status  /compact"),
             ("Display", "/verbose  /debug  /diff  /cost  /tokens"),
             ("Model", "/model list  ·  /model <provider>/<id>  ·  /model status"),
@@ -620,6 +650,23 @@ def _handle_command(cmd: str, session: ConversationSession, store: SessionStore,
                     print(f"  {t:20s}  risk:{risk}")
             return "ok"
         print("Usage: /tools list | /tools show <name>")
+        return "ok"
+
+    if command == "/history":
+        try:
+            limit = int(parts[1]) if len(parts) > 1 else 10
+        except ValueError:
+            limit = 10
+        limit = max(1, min(limit, 50))
+        if console:
+            from evoagent.cli.ui import render as R
+            R.history_timeline(console, session.turns, limit=limit)
+        else:
+            if not session.turns:
+                print("No conversation history yet.")
+            for i, turn in enumerate(session.turns[-limit:], 1):
+                print(f"{i}. Q: {turn.user_message}")
+                print(f"   A: {turn.assistant_response}")
         return "ok"
 
     if command == "/permissions":

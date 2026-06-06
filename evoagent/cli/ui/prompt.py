@@ -1,6 +1,7 @@
 """prompt_toolkit PromptSession with a dynamic, polished prompt + toolbar."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -66,7 +67,7 @@ def create_prompt_session(
             parts += [("class:tb.sep", "   ·   "), ("class:tb.dim", status)]
         parts += [
             ("class:tb.sep", "      "),
-            ("class:tb.hint", "↵ send   esc esc quit   /help"),
+            ("class:tb.hint", "↑↓ history   ↵ send   esc esc quit   /help"),
         ]
         return parts
 
@@ -75,6 +76,16 @@ def create_prompt_session(
     @bindings.add("tab")
     def _tab(event):
         event.app.current_buffer.complete_next()
+
+    @bindings.add("up")
+    def _up(event):
+        """Browse backward through input history."""
+        event.current_buffer.history_backward()
+
+    @bindings.add("down")
+    def _down(event):
+        """Browse forward through input history."""
+        event.current_buffer.history_forward()
 
     @bindings.add("enter")
     def _enter(event):
@@ -111,6 +122,7 @@ def create_prompt_session(
             event.app.exit(result="/interrupt")
 
     try:
+        Path(history_path).parent.mkdir(parents=True, exist_ok=True)
         history = FileHistory(history_path)
     except Exception:
         history = None
