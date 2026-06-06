@@ -174,6 +174,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                             "prompt_tokens": u.get("prompt_tokens", 0),
                             "completion_tokens": u.get("completion_tokens", 0),
                             "total_tokens": u.get("total_tokens", 0),
+                            "prompt_cache_hit_tokens": u.get("prompt_cache_hit_tokens", 0),
+                            "prompt_cache_miss_tokens": u.get("prompt_cache_miss_tokens", 0),
                         }
                     choices = chunk.get("choices") or []
                     if not choices:
@@ -407,6 +409,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     "prompt_tokens": usage.get("prompt_tokens", 0),
                     "completion_tokens": usage.get("completion_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    # DeepSeek prompt-cache accounting (subset of prompt_tokens).
+                    "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens", 0),
+                    "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens", 0),
                 },
                 finish_reason=finish_reason,
                 reasoning_content=reasoning,

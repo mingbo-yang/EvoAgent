@@ -533,11 +533,13 @@ class ReActEngine:
         if isinstance(usage, dict):
             pt = usage.get("prompt_tokens", 0) or 0
             ct = usage.get("completion_tokens", 0) or 0
+            cached = usage.get("prompt_cache_hit_tokens", 0) or 0
         else:
             pt = getattr(usage, "prompt_tokens", 0) or 0
             ct = getattr(usage, "completion_tokens", 0) or 0
+            cached = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
         model = getattr(response, "model", "") or ""
-        self.cost.add_call(model, pt, ct)
+        self.cost.add_call(model, pt, ct, cached_tokens=cached)
 
     async def _emit(self, event_type: str, tool_name: str, payload: dict) -> None:
         if self.tool_event_hook is None:
