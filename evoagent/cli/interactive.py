@@ -122,7 +122,7 @@ async def run_interactive():
 
     session = ConversationSession(workspace=str(workspace))
 
-    version = "v0.5.0"
+    version = "v1.0.0"
 
     # Banner
     if HAS_RICH and sys.stdout.isatty():
