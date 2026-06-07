@@ -20,7 +20,7 @@ from evoagent.tools.base import BaseTool, RiskLevel
 from evoagent.tools.schema import ToolResult
 
 _DEFAULT_TIMEOUT = 20.0
-_HTML_SEARCH_TIMEOUT = 5.0
+_HTML_SEARCH_TIMEOUT = 3.0
 _MAX_REDIRECTS = 5
 _USER_AGENT = (
     "Mozilla/5.0 (compatible; EvoAgent/1.0; +https://github.com/mingbo-yang/EvoAgent)"
@@ -66,7 +66,11 @@ async def _fetch_with_egress(
     """GET ``url`` following redirects manually, re-checking egress per hop."""
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
-        ok, reason = check_url_allowed(current, allowlist=allowlist)
+        # DNS/egress validation can block in socket.getaddrinfo; run it in a
+        # worker thread so outer asyncio timeouts remain responsive.
+        ok, reason = await asyncio.to_thread(
+            check_url_allowed, current, allowlist=allowlist
+        )
         if not ok:
             raise PermissionError(reason)
         resp = await client.get(current, follow_redirects=False)
@@ -266,31 +270,35 @@ class WebSearchTool(BaseTool):
             timeout=_DEFAULT_TIMEOUT, headers={"User-Agent": _USER_AGENT},
             trust_env=False,
         ) as client:
-            # 1) Free HTML backends first (Bing -> DuckDuckGo).
-            for tmpl, parser_name in self._BACKENDS:
-                url = tmpl.format(q=quote_plus(query))
-                try:
-                    resp = await asyncio.wait_for(
-                        _fetch_with_egress(client, url, allowlist),
-                        timeout=_HTML_SEARCH_TIMEOUT,
+            # 1) Free HTML backends first, but race them concurrently under a
+            #    short total budget. This keeps the UI responsive when one
+            #    backend stalls and still preserves the "free before API" rule.
+            html_tasks = [
+                asyncio.create_task(
+                    self._try_html_backend(
+                        client, tmpl, parser_name, parsers, query, max_results, allowlist
                     )
-                except PermissionError as e:
-                    # A free backend being unreachable/blocked must not prevent
-                    # the Tavily fallback; record and move on.
-                    last_error = f"Egress blocked: {e}"
-                    continue
-                except TimeoutError:
-                    last_error = f"Timed out fetching {urlparse(url).netloc}"
-                    continue
-                except (httpx.HTTPError, RuntimeError) as e:
-                    last_error = f"{type(e).__name__}: {e}"
-                    continue
-                if resp.status_code >= 400:
-                    last_error = f"HTTP {resp.status_code} from {urlparse(url).netloc}"
-                    continue
-                hits = parsers[parser_name](resp.text, max_results)
-                if hits:
-                    return self._format(query, hits, urlparse(url).netloc)
+                )
+                for tmpl, parser_name in self._BACKENDS
+            ]
+            try:
+                for completed in asyncio.as_completed(
+                    html_tasks, timeout=_HTML_SEARCH_TIMEOUT
+                ):
+                    hits, engine, err = await completed
+                    if hits:
+                        for p in html_tasks:
+                            p.cancel()
+                        return self._format(query, hits, engine)
+                    if err:
+                        last_error = err
+            except TimeoutError:
+                last_error = "Timed out waiting for free HTML search backends"
+            finally:
+                for task in html_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*html_tasks, return_exceptions=True)
 
             # 2) Fallback to the Tavily API only if the free backends produced
             #    nothing and a TAVILY_API_KEY is configured.
@@ -311,3 +319,30 @@ class WebSearchTool(BaseTool):
             call_id=generate_id("call"), name=self.name, success=True,
             output="No results found.", metadata={"query": query, "results": 0},
         )
+
+    async def _try_html_backend(
+        self,
+        client: httpx.AsyncClient,
+        tmpl: str,
+        parser_name: str,
+        parsers,
+        query: str,
+        max_results: int,
+        allowlist: list[str] | None,
+    ) -> tuple[list[tuple[str, str, str]], str, str]:
+        url = tmpl.format(q=quote_plus(query))
+        engine = urlparse(url).netloc
+        try:
+            resp = await asyncio.wait_for(
+                _fetch_with_egress(client, url, allowlist),
+                timeout=_HTML_SEARCH_TIMEOUT,
+            )
+        except PermissionError as e:
+            return [], engine, f"Egress blocked: {e}"
+        except TimeoutError:
+            return [], engine, f"Timed out fetching {engine}"
+        except (httpx.HTTPError, RuntimeError) as e:
+            return [], engine, f"{type(e).__name__}: {e}"
+        if resp.status_code >= 400:
+            return [], engine, f"HTTP {resp.status_code} from {engine}"
+        return parsers[parser_name](resp.text, max_results), engine, ""
