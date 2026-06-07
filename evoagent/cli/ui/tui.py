@@ -79,7 +79,6 @@ class InteractiveTUI:
             wrap_lines=True,
             height=Dimension(weight=1),
             always_hide_cursor=True,
-            get_vertical_scroll=self._scroll_to_bottom,
         )
         input_win = Window(
             BufferControl(buffer=self.buffer),
@@ -142,11 +141,6 @@ class InteractiveTUI:
             mouse_support=False,
         )
 
-    def _scroll_to_bottom(self, window) -> int:
-        info = getattr(window, "render_info", None)
-        h = getattr(info, "window_height", 20) or 20
-        return max(0, len(self._visual_lines()) - h)
-
     def _prompt_prefix(self):
         mode = getattr(self.session.mode, "value", "default")
         cls = f"class:mode.{mode}" if mode in ("default", "plan", "auto") else "class:mode.default"
@@ -177,6 +171,7 @@ class InteractiveTUI:
             self._invalidate()
             return
         self._append("evo.user", f"❯ {text}")
+        self._append("evo.faint", "")
         self._invalidate()
         if text.startswith("/"):
             await self._handle_command(text)
@@ -202,22 +197,20 @@ class InteractiveTUI:
 
     async def _handle_user_message(self, text: str) -> None:
         self.state = "thinking"
+        self._append("evo.reasoning", f"{sym('running')} thinking")
         self._invalidate()
         started = time.monotonic()
-        response_parts: list[str] = []
+        assistant_idx: int | None = None
         try:
             async for chunk in self.runtime.handle_user_message_stream(text):
                 if chunk.startswith("·"):
                     self._append("evo.reasoning", f"{sym('reason')} {chunk.lstrip('· ').strip()}")
                 else:
-                    response_parts.append(chunk)
+                    assistant_idx = self._append_assistant_chunk(assistant_idx, chunk)
                 self._invalidate()
         except Exception as e:
             self._append("evo.error", f"{sym('fail')} {e}")
         finally:
-            response = "".join(response_parts).strip()
-            if response:
-                self._append("evo.text", response)
             elapsed = time.monotonic() - started
             tools = len(getattr(self.runtime, "_tool_names_this_turn", []) or [])
             footer = f"{elapsed:.1f}s"
@@ -236,7 +229,7 @@ class InteractiveTUI:
                 self.state = "running"
                 args = evt.payload.get("arguments") or {}
                 arg_text = _fmt_args(args)
-                self._append("evo.tool.name", f"{sym('done')} {name}" + (f"  {arg_text}" if arg_text else ""))
+                self._append("evo.tool.name", f"{sym('running')} {name}" + (f"  {arg_text}" if arg_text else ""))
             else:
                 ok = evt.type.value != "tool_call_failed"
                 output = evt.payload.get("output", "") or ""
@@ -273,6 +266,25 @@ class InteractiveTUI:
         if len(self._lines) > _MAX_LINES:
             self._lines = self._lines[-_MAX_LINES:]
 
+    def _append_assistant_chunk(self, idx: int | None, chunk: str) -> int | None:
+        if not chunk:
+            return idx
+        parts = chunk.split("\n")
+        if idx is None:
+            self._lines.append(("evo.text", parts[0]))
+            idx = len(self._lines) - 1
+        else:
+            style, prev = self._lines[idx]
+            self._lines[idx] = (style, prev + parts[0])
+        for part in parts[1:]:
+            self._lines.append(("evo.text", part))
+            idx = len(self._lines) - 1
+        if len(self._lines) > _MAX_LINES:
+            drop = len(self._lines) - _MAX_LINES
+            self._lines = self._lines[-_MAX_LINES:]
+            idx = max(0, idx - drop) if idx is not None else None
+        return idx
+
     def _append_tool_body(self, output: str, ok: bool = True) -> None:
         style = "evo.tool.out" if ok else "evo.error"
         lines = (output or "").splitlines()
@@ -284,12 +296,22 @@ class InteractiveTUI:
 
     def _render_transcript(self):
         fragments = []
-        for style, line in self._lines:
+        visible = self._visible_lines()
+        for style, line in visible:
             fragments.append((class_name(style), line + "\n"))
         return fragments
 
-    def _visual_lines(self) -> list[str]:
-        return [line for _style, line in self._lines]
+    def _visible_lines(self) -> list[tuple[str, str]]:
+        # Keep the latest activity visible, but render from the top of the
+        # transcript window rather than forcing the final line to sit directly
+        # above the input/toolbar. This avoids the "reply glued to the bottom"
+        # feeling while still showing the current turn.
+        try:
+            rows = self._app.output.get_size().rows if self._app else 24
+        except Exception:
+            rows = 24
+        transcript_rows = max(6, rows - 4)  # input + toolbar + breathing room
+        return self._lines[-transcript_rows:]
 
     def _invalidate(self) -> None:
         if self._app:

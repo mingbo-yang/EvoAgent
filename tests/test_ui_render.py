@@ -186,6 +186,65 @@ def test_persistent_tui_uses_fullscreen_fixed_toolbar(tmp_path, monkeypatch):
     assert app.layout.container.children[-1].height == 1
 
 
+def test_persistent_tui_appends_assistant_chunks_incrementally(tmp_path, monkeypatch):
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.cli.ui.tui import InteractiveTUI
+    from evoagent.conversation.session import ConversationSession
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Runtime:
+        async def handle_user_message_stream(self, text):
+            yield "hello "
+            yield "world"
+
+    class _Store:
+        def save(self, session):
+            return session.session_id
+
+    tui = InteractiveTUI(
+        session=ConversationSession(workspace=str(tmp_path)),
+        runtime=_Runtime(),
+        store=_Store(),
+        event_bus=EventBus(),
+        command_handler=lambda _cmd: "ok",
+        get_model=lambda: "deepseek-chat",
+    )
+    idx = tui._append_assistant_chunk(None, "hello ")
+    idx = tui._append_assistant_chunk(idx, "world")
+    assert tui._lines[idx] == ("evo.text", "hello world")
+
+
+def test_persistent_tui_visible_lines_are_window_sized(tmp_path, monkeypatch):
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.cli.ui.tui import InteractiveTUI
+    from evoagent.conversation.session import ConversationSession
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Runtime:
+        async def handle_user_message_stream(self, text):
+            yield "ok"
+
+    class _Store:
+        def save(self, session):
+            return session.session_id
+
+    tui = InteractiveTUI(
+        session=ConversationSession(workspace=str(tmp_path)),
+        runtime=_Runtime(),
+        store=_Store(),
+        event_bus=EventBus(),
+        command_handler=lambda _cmd: "ok",
+        get_model=lambda: "deepseek-chat",
+    )
+    for i in range(100):
+        tui._append("evo.text", f"line {i}")
+    visible = tui._visible_lines()
+    assert visible[-1] == ("evo.text", "line 99")
+    assert len(visible) <= 20  # default app-less fallback rows (24 - 4)
+
+
 def test_history_timeline_empty_and_turns():
     from evoagent.conversation.schema import TurnRecord
 
