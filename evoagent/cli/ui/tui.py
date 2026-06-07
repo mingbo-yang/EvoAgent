@@ -15,12 +15,21 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Dimension, HSplit, Layout, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    Dimension,
+    Float,
+    FloatContainer,
+    HSplit,
+    Layout,
+    Window,
+)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -56,6 +65,7 @@ class InteractiveTUI:
         self._lines: list[tuple[str, str]] = []
         self._app: Application | None = None
         self._welcome_visible = True
+        self._approval: dict | None = None
 
         Path(".evoagent").mkdir(parents=True, exist_ok=True)
         self.buffer = Buffer(
@@ -65,6 +75,7 @@ class InteractiveTUI:
             accept_handler=self._accept,
             multiline=False,
             enable_history_search=True,
+            read_only=Condition(lambda: self._approval is not None),
         )
 
     async def run(self) -> None:
@@ -106,22 +117,49 @@ class InteractiveTUI:
 
         @kb.add("tab")
         def _tab(event):
+            if self._approval is not None:
+                return
             event.current_buffer.complete_next()
 
         @kb.add("up")
         def _up(event):
+            if self._approval is not None:
+                self._approval["selected"] = (self._approval["selected"] - 1) % 3
+                event.app.invalidate()
+                return
             event.current_buffer.history_backward()
 
         @kb.add("down")
         def _down(event):
+            if self._approval is not None:
+                self._approval["selected"] = (self._approval["selected"] + 1) % 3
+                event.app.invalidate()
+                return
             event.current_buffer.history_forward()
 
         @kb.add("enter")
         def _enter(event):
+            if self._approval is not None:
+                self._approval_resolve(["yes", "remember", "no"][self._approval["selected"]])
+                return
             event.current_buffer.validate_and_handle()
+
+        @kb.add("1")
+        @kb.add("2")
+        @kb.add("3")
+        def _approval_number(event):
+            if self._approval is None:
+                event.current_buffer.insert_text(event.data)
+                return
+            idx = int(event.data) - 1
+            self._approval["selected"] = idx
+            self._approval_resolve(["yes", "remember", "no"][idx])
 
         @kb.add("c-c")
         def _ctrl_c(event):
+            if self._approval is not None:
+                self._approval_resolve("no")
+                return
             if event.app.current_buffer.text:
                 event.app.current_buffer.text = ""
             elif self.state != "idle":
@@ -138,13 +176,37 @@ class InteractiveTUI:
 
         @kb.add("escape")
         def _esc(event):
+            if self._approval is not None:
+                self._approval_resolve("no")
+                return
             if self.state == "idle" and not event.app.current_buffer.text:
                 event.app.exit()
 
-        layout = Layout(
-            HSplit([transcript, input_top_rule, input_win, input_bottom_rule, toolbar]),
-            focused_element=input_win,
+        root = HSplit([transcript, input_top_rule, input_win, input_bottom_rule, toolbar])
+        approval_win = Window(
+            FormattedTextControl(lambda: FormattedText(self._approval_fragments())),
+            width=lambda: min(max(48, self._width() - 8), 88),
+            height=lambda: self._approval_height(),
+            wrap_lines=False,
+            style="class:approval",
         )
+        container = FloatContainer(
+            content=root,
+            floats=[
+                Float(
+                    content=ConditionalContainer(
+                        content=approval_win,
+                        filter=Condition(lambda: self._approval is not None),
+                    ),
+                    top=2,
+                    left=lambda: max(0, (self._width() - min(max(48, self._width() - 8), 88)) // 2),
+                    width=lambda: min(max(48, self._width() - 8), 88),
+                    height=lambda: self._approval_height(),
+                    hide_when_covering_content=True,
+                )
+            ],
+        )
+        layout = Layout(container, focused_element=input_win)
         return Application(
             layout=layout,
             key_bindings=kb,
@@ -165,6 +227,35 @@ class InteractiveTUI:
         status = f"{self.state} · {len(self.session.messages)} msgs · {len(self.session.turns)} turns"
         text = render_toolbar_text(self.get_model(), status, self._width())
         return [("class:bottom-toolbar", text)]
+
+    def _approval_width(self) -> int:
+        return min(max(48, self._width() - 8), 88)
+
+    def _approval_height(self) -> int:
+        return 12 if self._approval is not None else 1
+
+    def _approval_fragments(self):
+        if self._approval is None:
+            return []
+        from evoagent.cli.ui.approval_view import render_approval_fragments
+
+        return render_approval_fragments(
+            self._approval["action"],
+            self._approval["command"],
+            self._approval.get("description", ""),
+            self._approval.get("risk", "medium"),
+            selected=self._approval["selected"],
+            width=self._approval_width(),
+        )
+
+    def _approval_resolve(self, value: str) -> None:
+        if self._approval is None:
+            return
+        fut = self._approval.get("future")
+        self._approval = None
+        if fut is not None and not fut.done():
+            fut.set_result(value)
+        self._invalidate()
 
     def _input_rule(self, label: str = ""):
         """Horizontal input-area rule, Copilot-style, width-adaptive."""
@@ -266,14 +357,17 @@ class InteractiveTUI:
         async def on_approval(evt):
             tool = evt.payload.get("tool_name", "?")
             cmd = str(evt.payload.get("arguments", {}))
-
-            def ask():
-                print(f"\nApprove tool: {tool}")
-                print(cmd[:500])
-                return input("Approve? [y/N] ").strip().lower()
-
-            choice = await run_in_terminal(ask, render_cli_done=False)
-            return "yes" if choice in ("y", "yes") else "no"
+            fut = asyncio.get_running_loop().create_future()
+            self._approval = {
+                "action": f"Approve tool: {tool}",
+                "command": cmd,
+                "description": f"Run '{tool}' in workspace?",
+                "risk": evt.payload.get("risk", "medium"),
+                "selected": 0,
+                "future": fut,
+            }
+            self._invalidate()
+            return await fut
 
         self.event_bus.subscribe("approval_requested", on_approval)
         self.event_bus.subscribe("tool_call_started", on_tool)
