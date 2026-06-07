@@ -155,7 +155,7 @@ def create_prompt_session(
         if not event.app.current_buffer.text:
             event.app.exit(result="/exit")
         else:
-            event.app.current_buffer.cut_right()
+            event.app.current_buffer.delete()
 
     @bindings.add("c-o")
     def _co(event):

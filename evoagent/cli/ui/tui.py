@@ -172,7 +172,7 @@ class InteractiveTUI:
             if not event.app.current_buffer.text:
                 event.app.exit()
             else:
-                event.app.current_buffer.cut_right()
+                event.app.current_buffer.delete()
 
         @kb.add("escape")
         def _esc(event):
@@ -199,7 +199,9 @@ class InteractiveTUI:
                         filter=Condition(lambda: self._approval is not None),
                     ),
                     top=2,
-                    left=lambda: max(0, (self._width() - min(max(48, self._width() - 8), 88)) // 2),
+                    # Float.left does not support callables on prompt_toolkit
+                    # 3.x; keep a stable left margin and let the width adapt.
+                    left=2,
                     width=lambda: min(max(48, self._width() - 8), 88),
                     height=lambda: self._approval_height(),
                     hide_when_covering_content=True,
