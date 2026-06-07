@@ -180,11 +180,45 @@ def test_persistent_tui_uses_fullscreen_fixed_toolbar(tmp_path, monkeypatch):
     )
     app = tui._build_app()
     assert app.full_screen is True
-    # Layout: transcript / input / spacer / toolbar. The toolbar is the last
-    # row, and the spacer prevents the cursor from sitting flush against it.
-    assert len(app.layout.container.children) == 4
+    # Layout: transcript / input top rule / input / input bottom rule / toolbar.
+    # The toolbar is the last row, while the two rules clearly mark input area.
+    assert len(app.layout.container.children) == 5
+    assert app.layout.container.children[-4].height == 1
     assert app.layout.container.children[-2].height == 1
     assert app.layout.container.children[-1].height == 1
+
+
+def test_persistent_tui_input_rules_track_width(tmp_path, monkeypatch):
+    from prompt_toolkit.utils import get_cwidth
+
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.cli.ui.tui import InteractiveTUI
+    from evoagent.conversation.session import ConversationSession
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Runtime:
+        async def handle_user_message_stream(self, text):
+            yield "ok"
+
+    class _Store:
+        def save(self, session):
+            return session.session_id
+
+    tui = InteractiveTUI(
+        session=ConversationSession(workspace=str(tmp_path)),
+        runtime=_Runtime(),
+        store=_Store(),
+        event_bus=EventBus(),
+        command_handler=lambda _cmd: "ok",
+        get_model=lambda: "deepseek-chat",
+    )
+    tui._app = type("A", (), {"output": type("O", (), {"get_size": lambda self: type("S", (), {"columns": 72})()})()})()
+    top = "".join(text for _style, text in tui._input_rule(" input "))
+    bottom = "".join(text for _style, text in tui._input_rule(""))
+    assert get_cwidth(top) == 72
+    assert get_cwidth(bottom) == 72
+    assert " input " in top
 
 
 def test_persistent_tui_initial_welcome_visible(tmp_path, monkeypatch):

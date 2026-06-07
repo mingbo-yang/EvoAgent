@@ -87,12 +87,21 @@ class InteractiveTUI:
             height=1,
             get_line_prefix=lambda _ln, _wrap: self._prompt_prefix(),
         )
+        input_top_rule = Window(
+            FormattedTextControl(lambda: FormattedText(self._input_rule(" input "))),
+            height=1,
+            style="class:input.rule",
+        )
+        input_bottom_rule = Window(
+            FormattedTextControl(lambda: FormattedText(self._input_rule(""))),
+            height=1,
+            style="class:input.rule",
+        )
         toolbar = Window(
             FormattedTextControl(lambda: FormattedText(self._toolbar())),
             height=1,
             style="class:bottom-toolbar",
         )
-        spacer = Window(height=1, char=" ")
         kb = KeyBindings()
 
         @kb.add("tab")
@@ -133,7 +142,7 @@ class InteractiveTUI:
                 event.app.exit()
 
         layout = Layout(
-            HSplit([transcript, input_win, spacer, toolbar]),
+            HSplit([transcript, input_top_rule, input_win, input_bottom_rule, toolbar]),
             focused_element=input_win,
         )
         return Application(
@@ -156,6 +165,16 @@ class InteractiveTUI:
         status = f"{self.state} · {len(self.session.messages)} msgs · {len(self.session.turns)} turns"
         text = render_toolbar_text(self.get_model(), status, self._width())
         return [("class:bottom-toolbar", text)]
+
+    def _input_rule(self, label: str = ""):
+        """Horizontal input-area rule, Copilot-style, width-adaptive."""
+        width = self._width()
+        if label:
+            text = "─" + label
+            text += "─" * max(0, width - get_cwidth(text))
+        else:
+            text = "─" * max(0, width)
+        return [("class:input.rule", text)]
 
     def _width(self) -> int:
         try:
@@ -315,7 +334,7 @@ class InteractiveTUI:
             rows = self._app.output.get_size().rows if self._app else 24
         except Exception:
             rows = 24
-        transcript_rows = max(6, rows - 5)  # input + spacer + toolbar + room
+        transcript_rows = max(6, rows - 6)  # input rules + input + toolbar
         welcome = self._welcome_lines(self._width()) if self._welcome_visible else []
         remaining = max(0, transcript_rows - len(welcome))
         if remaining:
@@ -380,4 +399,5 @@ _STYLE = Style.from_dict({
     "mode.plan": "#fcd34d bold",
     "mode.auto": "#c4b5fd bold",
     "bottom-toolbar": "bg:#1b1f2a #b8c0d4",
+    "input.rule": "#3b4252",
 })
