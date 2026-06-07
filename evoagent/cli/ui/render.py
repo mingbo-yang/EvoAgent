@@ -319,14 +319,16 @@ class ThinkingReporter:
 
         output = self._output
         size = shutil.get_terminal_size((self.console.width or 80, 24))
-        row = max(0, size.lines - 1)
+        # Vt100_Output.cursor_goto emits ESC[{row};{column}H directly, so the
+        # coordinates are 1-based. Use the terminal's last row and column 1.
+        row = max(1, size.lines)
         text = render_toolbar_text(self.get_model(), self.get_status(), size.columns)
         try:
             # Use prompt_toolkit's output primitives for cursor movement and
             # text rendering. CSI s/u (save/restore cursor) is the modern form;
             # avoid DEC ESC7/ESC8 which some terminals show as literal text.
             output.write_raw("\x1b[s")
-            output.cursor_goto(row, 0)
+            output.cursor_goto(row, 1)
             output.erase_end_of_line()
             print_formatted_text(
                 FormattedText([("class:bottom-toolbar", text)]),
@@ -345,9 +347,9 @@ class ThinkingReporter:
             return
         try:
             size = shutil.get_terminal_size((self.console.width or 80, 24))
-            row = max(0, size.lines - 1)
+            row = max(1, size.lines)
             self._output.write_raw("\x1b[s")
-            self._output.cursor_goto(row, 0)
+            self._output.cursor_goto(row, 1)
             self._output.erase_end_of_line()
             self._output.write_raw("\x1b[u")
             self._output.flush()

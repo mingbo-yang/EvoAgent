@@ -142,6 +142,19 @@ def test_thinking_reporter_does_not_emit_raw_cursor_save_sequences():
     assert "\x1b8" not in out
 
 
+def test_thinking_toolbar_uses_one_based_vt100_coordinates():
+    from pathlib import Path
+
+    src = Path("evoagent/cli/ui/render.py").read_text(encoding="utf-8")
+    # prompt_toolkit's Vt100 cursor_goto writes ESC[{row};{column}H directly,
+    # so coordinates must be 1-based. Regression for using column 0 / lines-1,
+    # which left the toolbar near the current prompt instead of the terminal
+    # bottom in real terminals.
+    assert "cursor_goto(row, 1)" in src
+    assert "cursor_goto(row, 0)" not in src
+    assert "size.lines - 1" not in src
+
+
 def test_history_timeline_empty_and_turns():
     from evoagent.conversation.schema import TurnRecord
 
