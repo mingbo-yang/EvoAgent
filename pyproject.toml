@@ -29,6 +29,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "tomlkit>=0.12",
+    "prompt_toolkit>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +39,6 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "mkdocs>=1.5",
-    "prompt_toolkit>=3.0",
 ]
 observability = [
     "opentelemetry-api>=1.20",

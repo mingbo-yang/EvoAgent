@@ -104,3 +104,13 @@ def test_python_m_evoagent_help():
     clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     assert "Usage" in clean
     assert "evoagent" in clean
+
+
+def test_prompt_toolkit_is_runtime_dependency():
+    """The interactive TUI requires prompt_toolkit at runtime, not just dev."""
+    import tomllib
+    from pathlib import Path
+
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    deps = data["project"]["dependencies"]
+    assert any(dep.startswith("prompt_toolkit") for dep in deps)
