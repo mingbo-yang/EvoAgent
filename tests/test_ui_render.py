@@ -26,6 +26,7 @@ def test_symbols_ascii_fallback():
     ascii_set = symbols._ASCII
     assert ascii_set["ok"] == "+"
     assert ascii_set["fail"] == "x"
+    assert symbols.spinner_frames()
     # Unknown name resolves to empty string, never raises.
     assert symbols.sym("does-not-exist") == ""
 
@@ -459,6 +460,90 @@ def test_persistent_tui_markdown_line_rendering():
     assert "class:evo.code" in styles
     assert "class:evo.heading" in styles
     assert "web_tools.py" in text
+
+
+def test_persistent_tui_thinking_icon_is_dynamic(tmp_path, monkeypatch):
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.cli.ui.tui import InteractiveTUI
+    from evoagent.conversation.session import ConversationSession
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Runtime:
+        async def handle_user_message_stream(self, text):
+            yield "ok"
+
+    class _Store:
+        def save(self, session):
+            return session.session_id
+
+    tui = InteractiveTUI(
+        session=ConversationSession(workspace=str(tmp_path)),
+        runtime=_Runtime(),
+        store=_Store(),
+        event_bus=EventBus(),
+        command_handler=lambda _cmd: "ok",
+        get_model=lambda: "deepseek-chat",
+    )
+    tui._spinner_frame = 0
+    first = tui._thinking_text()
+    tui._spinner_frame = 1
+    second = tui._thinking_text()
+    assert first != second
+    assert first.endswith(" thinking")
+    assert second.endswith(" thinking")
+
+
+def test_persistent_tui_markdown_table_rendering():
+    from evoagent.cli.ui.tui import _markdown_lines
+
+    rendered = _markdown_lines(
+        "Here is the result:\n\n"
+        "| Name | Count |\n"
+        "| --- | ---: |\n"
+        "| files | 12 |\n"
+        "| tests | 679 |"
+    )
+    plain_lines = ["".join(text for _style, text in line) for line in rendered]
+    joined = "\n".join(plain_lines)
+    assert "┌" in joined
+    assert "Name" in joined
+    assert "files" in joined
+    assert "| --- |" not in joined
+    table_lines = [line for line in plain_lines if line.startswith(("┌", "│", "├", "└"))]
+    widths = {len(line) for line in table_lines}
+    assert len(widths) == 1
+
+
+def test_persistent_tui_stream_rerenders_table_block(tmp_path, monkeypatch):
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.cli.ui.tui import InteractiveTUI
+    from evoagent.conversation.session import ConversationSession
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Runtime:
+        async def handle_user_message_stream(self, text):
+            yield "ok"
+
+    class _Store:
+        def save(self, session):
+            return session.session_id
+
+    tui = InteractiveTUI(
+        session=ConversationSession(workspace=str(tmp_path)),
+        runtime=_Runtime(),
+        store=_Store(),
+        event_bus=EventBus(),
+        command_handler=lambda _cmd: "ok",
+        get_model=lambda: "deepseek-chat",
+    )
+    idx = tui._append_assistant_chunk(None, "| A | B |\n")
+    assert any("| A | B |" in "".join(text for _style, text in line) for line in tui._lines)
+    tui._append_assistant_chunk(idx, "| --- | --- |\n| 1 | 2 |")
+    joined = "\n".join("".join(text for _style, text in line) for line in tui._lines)
+    assert "┌" in joined
+    assert "| --- |" not in joined
 
 
 def test_history_timeline_empty_and_turns():

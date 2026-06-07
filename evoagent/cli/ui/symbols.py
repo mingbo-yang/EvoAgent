@@ -43,6 +43,9 @@ _ASCII = {
     "tree_bar": "|",
 }
 
+_UNICODE_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_ASCII_SPINNER_FRAMES = ("-", "\\", "|", "/")
+
 
 def _supports_unicode() -> bool:
     enc = (getattr(sys.stdout, "encoding", None) or "").lower()
@@ -55,3 +58,8 @@ _SET = _UNICODE if _supports_unicode() else _ASCII
 def sym(name: str) -> str:
     """Return a glyph by name, ASCII-safe when the terminal can't encode it."""
     return _SET.get(name, "")
+
+
+def spinner_frames() -> tuple[str, ...]:
+    """Return terminal-safe frames for lightweight in-place activity animation."""
+    return _UNICODE_SPINNER_FRAMES if _SET is _UNICODE else _ASCII_SPINNER_FRAMES

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import re
 import time
 from collections import deque
 from collections.abc import Callable
@@ -34,12 +35,14 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
 from evoagent.cli.ui.completion import SlashCompleter
 from evoagent.cli.ui.prompt import render_toolbar_text
-from evoagent.cli.ui.symbols import sym
+from evoagent.cli.ui.symbols import spinner_frames, sym
 
 _MAX_LINES = 2000
 _TOOL_PREVIEW_LINES = 6
@@ -71,6 +74,12 @@ class InteractiveTUI:
         self._approval: dict | None = None
         self._scroll_offset = 0
         self._queue: deque[str] = deque()
+        self._thinking_line_idx: int | None = None
+        self._thinking_task: asyncio.Task | None = None
+        self._spinner_frame = 0
+        self._assistant_stream_start: int | None = None
+        self._assistant_stream_len = 0
+        self._assistant_stream_text = ""
 
         Path(".evoagent").mkdir(parents=True, exist_ok=True)
         self.buffer = Buffer(
@@ -240,6 +249,7 @@ class InteractiveTUI:
             layout=layout,
             key_bindings=kb,
             style=_STYLE,
+            output=_create_safe_output(),
             # Full-screen layout is what makes the bottom toolbar a true fixed
             # terminal-bottom row across input, thinking, tool events and answer
             # rendering. The legacy non-fullscreen loop remains as fallback.
@@ -364,12 +374,16 @@ class InteractiveTUI:
 
     async def _handle_user_message(self, text: str) -> None:
         self.state = "thinking"
-        self._append("evo.reasoning", f"{sym('running')} thinking")
+        self._assistant_stream_start = None
+        self._assistant_stream_len = 0
+        self._assistant_stream_text = ""
+        self._start_thinking_indicator()
         self._invalidate()
         started = time.monotonic()
         assistant_idx: int | None = None
         try:
             async for chunk in self.runtime.handle_user_message_stream(text):
+                self._stop_thinking_indicator()
                 if chunk.startswith("·"):
                     self._append("evo.reasoning", f"{sym('reason')} {chunk.lstrip('· ').strip()}")
                 else:
@@ -378,6 +392,7 @@ class InteractiveTUI:
         except Exception as e:
             self._append("evo.error", f"{sym('fail')} {e}")
         finally:
+            self._stop_thinking_indicator()
             elapsed = time.monotonic() - started
             tools = len(getattr(self.runtime, "_tool_names_this_turn", []) or [])
             footer = f"{elapsed:.1f}s"
@@ -385,6 +400,9 @@ class InteractiveTUI:
                 footer += f" · {tools} tool{'s' if tools != 1 else ''}"
             self._append("evo.faint", footer)
             self.state = "idle"
+            self._assistant_stream_start = None
+            self._assistant_stream_len = 0
+            self._assistant_stream_text = ""
             self.store.save(self.session)
             self._invalidate()
 
@@ -393,6 +411,7 @@ class InteractiveTUI:
         async def on_tool(evt):
             name = evt.payload.get("tool_name", "?")
             if evt.type.value == "tool_call_started":
+                self._stop_thinking_indicator()
                 self.state = "running"
                 args = evt.payload.get("arguments") or {}
                 arg_text = _fmt_args(args)
@@ -437,21 +456,55 @@ class InteractiveTUI:
     def _append_assistant_chunk(self, idx: int | None, chunk: str) -> int | None:
         if not chunk:
             return idx
-        parts = chunk.split("\n")
-        if idx is None:
-            self._lines.append(_markdown_line(parts[0]))
-            idx = len(self._lines) - 1
-        else:
-            plain = "".join(text for _style, text in self._lines[idx])
-            self._lines[idx] = _markdown_line(plain + parts[0])
-        for part in parts[1:]:
-            self._lines.append(_markdown_line(part))
-            idx = len(self._lines) - 1
+        if self._assistant_stream_start is None:
+            self._assistant_stream_start = len(self._lines)
+            self._assistant_stream_len = 0
+            self._assistant_stream_text = ""
+        self._assistant_stream_text += chunk
+        rendered = _markdown_lines(self._assistant_stream_text)
+        start = self._assistant_stream_start
+        self._lines[start:start + self._assistant_stream_len] = rendered
+        self._assistant_stream_len = len(rendered)
+        idx = start + self._assistant_stream_len - 1 if self._assistant_stream_len else None
         if len(self._lines) > _MAX_LINES:
             drop = len(self._lines) - _MAX_LINES
             self._lines = self._lines[-_MAX_LINES:]
+            if self._assistant_stream_start is not None:
+                self._assistant_stream_start = max(0, self._assistant_stream_start - drop)
             idx = max(0, idx - drop) if idx is not None else None
         return idx
+
+    def _start_thinking_indicator(self) -> None:
+        self._spinner_frame = 0
+        self._append("evo.reasoning", self._thinking_text())
+        self._thinking_line_idx = len(self._lines) - 1
+        self._thinking_task = asyncio.create_task(self._animate_thinking())
+
+    def _stop_thinking_indicator(self) -> None:
+        if self._thinking_line_idx is not None:
+            self._set_line(self._thinking_line_idx, "evo.reasoning", f"{sym('reason')} thinking")
+            self._thinking_line_idx = None
+        if self._thinking_task is not None:
+            self._thinking_task.cancel()
+            self._thinking_task = None
+
+    def _thinking_text(self) -> str:
+        frames = spinner_frames()
+        return f"{frames[self._spinner_frame % len(frames)]} thinking"
+
+    async def _animate_thinking(self) -> None:
+        try:
+            while self.state == "thinking" and self._thinking_line_idx is not None:
+                self._set_line(self._thinking_line_idx, "evo.reasoning", self._thinking_text())
+                self._spinner_frame += 1
+                self._invalidate()
+                await asyncio.sleep(0.12)
+        except asyncio.CancelledError:
+            return
+
+    def _set_line(self, idx: int, style: str, text: str) -> None:
+        if 0 <= idx < len(self._lines):
+            self._lines[idx] = [(class_name(style), text)]
 
     def _append_tool_body(self, output: str, ok: bool = True) -> None:
         style = "evo.tool.out" if ok else "evo.error"
@@ -542,6 +595,13 @@ def class_name(style: str) -> str:
     return f"class:{style}" if not style.startswith("class:") else style
 
 
+def _create_safe_output():
+    try:
+        return create_output()
+    except Exception:
+        return DummyOutput()
+
+
 def _markdown_line(line: str) -> list[tuple[str, str]]:
     """Very small Markdown renderer for prompt_toolkit transcript lines.
 
@@ -565,6 +625,83 @@ def _markdown_line(line: str) -> list[tuple[str, str]]:
         num, rest = stripped.split(". ", 1)
         return [("class:evo.secondary", f"{num}. "), *_inline_md(rest)]
     return _inline_md(raw)
+
+
+def _markdown_lines(text: str) -> list[list[tuple[str, str]]]:
+    """Render Markdown text into transcript lines, including table blocks."""
+    lines = str(text).split("\n")
+    rendered: list[list[tuple[str, str]]] = []
+    i = 0
+    while i < len(lines):
+        if _starts_table(lines, i):
+            table_rows: list[list[str]] = [_split_table_row(lines[i]) or []]
+            i += 2  # Skip the Markdown separator row.
+            while i < len(lines):
+                row = _split_table_row(lines[i])
+                if row is None:
+                    break
+                table_rows.append(row)
+                i += 1
+            rendered.extend(_render_markdown_table(table_rows))
+            continue
+        rendered.append(_markdown_line(lines[i]))
+        i += 1
+    return rendered
+
+
+def _starts_table(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    header = _split_table_row(lines[index])
+    if header is None:
+        return False
+    separator = _split_table_row(lines[index + 1])
+    return separator is not None and all(_TABLE_SEPARATOR_RE.fullmatch(cell) for cell in separator)
+
+
+def _split_table_row(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if "|" not in stripped:
+        return None
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return cells if len(cells) > 1 else None
+
+
+def _render_markdown_table(rows: list[list[str]]) -> list[list[tuple[str, str]]]:
+    if not rows:
+        return []
+    cols = max(len(row) for row in rows)
+    normalized = [row + [""] * (cols - len(row)) for row in rows]
+    widths = [
+        max(3, max(get_cwidth(_plain_cell(row[col])) for row in normalized))
+        for col in range(cols)
+    ]
+
+    def border(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (width + 2) for width in widths) + right
+
+    def row_line(row: list[str]) -> str:
+        cells = []
+        for col, cell in enumerate(row):
+            plain = _plain_cell(cell)
+            cells.append(f" {plain}{' ' * (widths[col] - get_cwidth(plain))} ")
+        return "│" + "│".join(cells) + "│"
+
+    out: list[list[tuple[str, str]]] = [[("class:evo.faint", border("┌", "┬", "┐"))]]
+    out.append([("class:evo.heading", row_line(normalized[0]))])
+    out.append([("class:evo.faint", border("├", "┼", "┤"))])
+    for row in normalized[1:]:
+        out.append([("class:evo.text", row_line(row))])
+    out.append([("class:evo.faint", border("└", "┴", "┘"))])
+    return out
+
+
+def _plain_cell(cell: str) -> str:
+    return re.sub(r"(\*\*|`)", "", cell.strip())
 
 
 def _inline_md(text: str) -> list[tuple[str, str]]:
@@ -592,6 +729,9 @@ def _inline_md(text: str) -> list[tuple[str, str]]:
         out.append(("class:evo.text", text[i:j]))
         i = j
     return out
+
+
+_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 
 
 def _fmt_args(args: dict) -> str:
