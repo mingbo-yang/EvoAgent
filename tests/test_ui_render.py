@@ -180,10 +180,40 @@ def test_persistent_tui_uses_fullscreen_fixed_toolbar(tmp_path, monkeypatch):
     )
     app = tui._build_app()
     assert app.full_screen is True
-    # The toolbar is the last row in the root HSplit, so it remains fixed at
-    # the terminal bottom while transcript/input update above it.
-    assert len(app.layout.container.children) == 3
+    # Layout: transcript / input / spacer / toolbar. The toolbar is the last
+    # row, and the spacer prevents the cursor from sitting flush against it.
+    assert len(app.layout.container.children) == 4
+    assert app.layout.container.children[-2].height == 1
     assert app.layout.container.children[-1].height == 1
+
+
+def test_persistent_tui_initial_welcome_visible(tmp_path, monkeypatch):
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.cli.ui.tui import InteractiveTUI
+    from evoagent.conversation.session import ConversationSession
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Runtime:
+        async def handle_user_message_stream(self, text):
+            yield "ok"
+
+    class _Store:
+        def save(self, session):
+            return session.session_id
+
+    tui = InteractiveTUI(
+        session=ConversationSession(workspace=str(tmp_path)),
+        runtime=_Runtime(),
+        store=_Store(),
+        event_bus=EventBus(),
+        command_handler=lambda _cmd: "ok",
+        get_model=lambda: "deepseek-chat",
+    )
+    lines = tui._visible_lines()
+    joined = "\n".join(line for _style, line in lines)
+    assert "EvoAgent" in joined
+    assert "autonomous coding agent" in joined
 
 
 def test_persistent_tui_appends_assistant_chunks_incrementally(tmp_path, monkeypatch):

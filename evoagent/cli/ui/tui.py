@@ -23,6 +23,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Dimension, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 from evoagent.cli.ui.completion import SlashCompleter
 from evoagent.cli.ui.prompt import render_toolbar_text
@@ -54,6 +55,7 @@ class InteractiveTUI:
         self.state = "idle"  # idle | thinking | running
         self._lines: list[tuple[str, str]] = []
         self._app: Application | None = None
+        self._welcome_visible = True
 
         Path(".evoagent").mkdir(parents=True, exist_ok=True)
         self.buffer = Buffer(
@@ -90,6 +92,7 @@ class InteractiveTUI:
             height=1,
             style="class:bottom-toolbar",
         )
+        spacer = Window(height=1, char=" ")
         kb = KeyBindings()
 
         @kb.add("tab")
@@ -129,7 +132,10 @@ class InteractiveTUI:
             if self.state == "idle" and not event.app.current_buffer.text:
                 event.app.exit()
 
-        layout = Layout(HSplit([transcript, input_win, toolbar]), focused_element=input_win)
+        layout = Layout(
+            HSplit([transcript, input_win, spacer, toolbar]),
+            focused_element=input_win,
+        )
         return Application(
             layout=layout,
             key_bindings=kb,
@@ -172,6 +178,7 @@ class InteractiveTUI:
             return
         self._append("evo.user", f"❯ {text}")
         self._append("evo.faint", "")
+        self._welcome_visible = False
         self._invalidate()
         if text.startswith("/"):
             await self._handle_command(text)
@@ -256,9 +263,7 @@ class InteractiveTUI:
 
     # ── Transcript rendering ─────────────────────────────────────────
     def _append_banner(self) -> None:
-        self._append("evo.heading", "EvoAgent")
-        self._append("evo.muted", "Type /help for commands. ↑/↓ browse history. Ctrl+D exits.")
-        self._append("evo.faint", "")
+        self._welcome_visible = True
 
     def _append(self, style: str, text: str) -> None:
         for line in str(text).splitlines() or [""]:
@@ -310,8 +315,36 @@ class InteractiveTUI:
             rows = self._app.output.get_size().rows if self._app else 24
         except Exception:
             rows = 24
-        transcript_rows = max(6, rows - 4)  # input + toolbar + breathing room
-        return self._lines[-transcript_rows:]
+        transcript_rows = max(6, rows - 5)  # input + spacer + toolbar + room
+        welcome = self._welcome_lines(self._width()) if self._welcome_visible else []
+        remaining = max(0, transcript_rows - len(welcome))
+        if remaining:
+            return welcome + self._lines[-remaining:]
+        return welcome[-transcript_rows:]
+
+    def _welcome_lines(self, width: int) -> list[tuple[str, str]]:
+        width = max(46, width)
+        inner = width - 2
+
+        def pad(text: str) -> str:
+            gap = max(0, inner - get_cwidth(text))
+            return text + (" " * gap)
+
+        title = " EvoAgent "
+        left = max(1, (inner - get_cwidth(title)) // 2)
+        right = inner - get_cwidth(title) - left
+        top = "╭" + ("─" * left) + title + ("─" * right) + "╮"
+        bottom = "╰" + ("─" * inner) + "╯"
+        return [
+            ("evo.faint", top),
+            ("evo.heading", "│" + pad("   ✦ · ✦") + "│"),
+            ("evo.heading", "│" + pad("  ( ◡‿◡ )   EvoAgent  ·  autonomous coding agent") + "│"),
+            ("evo.secondary", "│" + pad("   ╰─╯") + "│"),
+            ("evo.faint", "│" + pad("") + "│"),
+            ("evo.muted", "│" + pad("  Type /help for commands.  ↑/↓ history.  Ctrl+D exits.") + "│"),
+            ("evo.faint", bottom),
+            ("evo.faint", ""),
+        ]
 
     def _invalidate(self) -> None:
         if self._app:
