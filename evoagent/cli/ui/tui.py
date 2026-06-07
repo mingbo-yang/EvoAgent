@@ -21,6 +21,7 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
     Dimension,
@@ -62,10 +63,11 @@ class InteractiveTUI:
         self.command_handler = command_handler
         self.get_model = get_model
         self.state = "idle"  # idle | thinking | running
-        self._lines: list[tuple[str, str]] = []
+        self._lines: list[list[tuple[str, str]]] = []
         self._app: Application | None = None
         self._welcome_visible = True
         self._approval: dict | None = None
+        self._scroll_offset = 0
 
         Path(".evoagent").mkdir(parents=True, exist_ok=True)
         self.buffer = Buffer(
@@ -182,6 +184,28 @@ class InteractiveTUI:
             if self.state == "idle" and not event.app.current_buffer.text:
                 event.app.exit()
 
+        @kb.add(Keys.ScrollUp)
+        @kb.add("pageup")
+        def _scroll_up(event):
+            self._scroll_offset = min(self._max_scroll(), self._scroll_offset + 5)
+            event.app.invalidate()
+
+        @kb.add(Keys.ScrollDown)
+        @kb.add("pagedown")
+        def _scroll_down(event):
+            self._scroll_offset = max(0, self._scroll_offset - 5)
+            event.app.invalidate()
+
+        @kb.add("home")
+        def _home(event):
+            self._scroll_offset = self._max_scroll()
+            event.app.invalidate()
+
+        @kb.add("end")
+        def _end(event):
+            self._scroll_offset = 0
+            event.app.invalidate()
+
         root = HSplit([transcript, input_top_rule, input_win, input_bottom_rule, toolbar])
         approval_win = Window(
             FormattedTextControl(lambda: FormattedText(self._approval_fragments())),
@@ -217,7 +241,7 @@ class InteractiveTUI:
             # terminal-bottom row across input, thinking, tool events and answer
             # rendering. The legacy non-fullscreen loop remains as fallback.
             full_screen=True,
-            mouse_support=False,
+            mouse_support=True,
         )
 
     def _prompt_prefix(self):
@@ -288,6 +312,7 @@ class InteractiveTUI:
             self._append("evo.warning", f"{sym('warn')} still working; wait for this turn to finish")
             self._invalidate()
             return
+        self._scroll_offset = 0
         self._append("evo.user", f"❯ {text}")
         self._append("evo.faint", "")
         self._welcome_visible = False
@@ -382,7 +407,7 @@ class InteractiveTUI:
 
     def _append(self, style: str, text: str) -> None:
         for line in str(text).splitlines() or [""]:
-            self._lines.append((style, line))
+            self._lines.append([(class_name(style), line)])
         if len(self._lines) > _MAX_LINES:
             self._lines = self._lines[-_MAX_LINES:]
 
@@ -391,13 +416,13 @@ class InteractiveTUI:
             return idx
         parts = chunk.split("\n")
         if idx is None:
-            self._lines.append(("evo.text", parts[0]))
+            self._lines.append(_markdown_line(parts[0]))
             idx = len(self._lines) - 1
         else:
-            style, prev = self._lines[idx]
-            self._lines[idx] = (style, prev + parts[0])
+            plain = "".join(text for _style, text in self._lines[idx])
+            self._lines[idx] = _markdown_line(plain + parts[0])
         for part in parts[1:]:
-            self._lines.append(("evo.text", part))
+            self._lines.append(_markdown_line(part))
             idx = len(self._lines) - 1
         if len(self._lines) > _MAX_LINES:
             drop = len(self._lines) - _MAX_LINES
@@ -417,11 +442,12 @@ class InteractiveTUI:
     def _render_transcript(self):
         fragments = []
         visible = self._visible_lines()
-        for style, line in visible:
-            fragments.append((class_name(style), line + "\n"))
+        for line in visible:
+            fragments.extend(line)
+            fragments.append(("", "\n"))
         return fragments
 
-    def _visible_lines(self) -> list[tuple[str, str]]:
+    def _visible_lines(self) -> list[list[tuple[str, str]]]:
         # Keep the latest activity visible, but render from the top of the
         # transcript window rather than forcing the final line to sit directly
         # above the input/toolbar. This avoids the "reply glued to the bottom"
@@ -432,12 +458,23 @@ class InteractiveTUI:
             rows = 24
         transcript_rows = max(6, rows - 6)  # input rules + input + toolbar
         welcome = self._welcome_lines(self._width()) if self._welcome_visible else []
-        remaining = max(0, transcript_rows - len(welcome))
-        if remaining:
-            return welcome + self._lines[-remaining:]
-        return welcome[-transcript_rows:]
+        all_lines = welcome + self._lines
+        if not all_lines:
+            return []
+        end = len(all_lines) - self._scroll_offset
+        start = max(0, end - transcript_rows)
+        return all_lines[start:end]
 
-    def _welcome_lines(self, width: int) -> list[tuple[str, str]]:
+    def _max_scroll(self) -> int:
+        try:
+            rows = self._app.output.get_size().rows if self._app else 24
+        except Exception:
+            rows = 24
+        transcript_rows = max(6, rows - 6)
+        total = len((self._welcome_lines(self._width()) if self._welcome_visible else []) + self._lines)
+        return max(0, total - transcript_rows)
+
+    def _welcome_lines(self, width: int) -> list[list[tuple[str, str]]]:
         width = max(46, width)
         inner = width - 2
 
@@ -451,14 +488,14 @@ class InteractiveTUI:
         top = "╭" + ("─" * left) + title + ("─" * right) + "╮"
         bottom = "╰" + ("─" * inner) + "╯"
         return [
-            ("evo.faint", top),
-            ("evo.heading", "│" + pad("   ✦ · ✦") + "│"),
-            ("evo.heading", "│" + pad("  ( ◡‿◡ )   EvoAgent  ·  autonomous coding agent") + "│"),
-            ("evo.secondary", "│" + pad("   ╰─╯") + "│"),
-            ("evo.faint", "│" + pad("") + "│"),
-            ("evo.muted", "│" + pad("  Type /help for commands.  ↑/↓ history.  Ctrl+D exits.") + "│"),
-            ("evo.faint", bottom),
-            ("evo.faint", ""),
+            [("class:evo.faint", top)],
+            [("class:evo.heading", "│" + pad("   ✦ · ✦") + "│")],
+            [("class:evo.heading", "│" + pad("  ( ◡‿◡ )   EvoAgent  ·  autonomous coding agent") + "│")],
+            [("class:evo.secondary", "│" + pad("   ╰─╯") + "│")],
+            [("class:evo.faint", "│" + pad("") + "│")],
+            [("class:evo.muted", "│" + pad("  Type /help for commands.  ↑/↓ history.  Ctrl+D exits.") + "│")],
+            [("class:evo.faint", bottom)],
+            [("class:evo.faint", "")],
         ]
 
     def _invalidate(self) -> None:
@@ -468,6 +505,58 @@ class InteractiveTUI:
 
 def class_name(style: str) -> str:
     return f"class:{style}" if not style.startswith("class:") else style
+
+
+def _markdown_line(line: str) -> list[tuple[str, str]]:
+    """Very small Markdown renderer for prompt_toolkit transcript lines.
+
+    It intentionally covers the common agent-answer surface: headings, bullets,
+    code fences, inline code and bold spans. This keeps the persistent TUI
+    lightweight while restoring Markdown readability after moving away from
+    Rich's Markdown renderer.
+    """
+    raw = str(line)
+    stripped = raw.strip()
+    if not stripped:
+        return [("class:evo.text", "")]
+    if stripped.startswith("```"):
+        return [("class:evo.faint", raw)]
+    if stripped.startswith("#"):
+        text = stripped.lstrip("#").strip()
+        return [("class:evo.heading", text)]
+    if stripped.startswith(("- ", "* ")):
+        return [("class:evo.secondary", "• "), *(_inline_md(stripped[2:]))]
+    if stripped[:3].replace(".", "").isdigit() and ". " in stripped[:5]:
+        num, rest = stripped.split(". ", 1)
+        return [("class:evo.secondary", f"{num}. "), *_inline_md(rest)]
+    return _inline_md(raw)
+
+
+def _inline_md(text: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    i = 0
+    while i < len(text):
+        if text.startswith("**", i):
+            j = text.find("**", i + 2)
+            if j != -1:
+                out.append(("class:evo.heading", text[i + 2:j]))
+                i = j + 2
+                continue
+        if text[i] == "`":
+            j = text.find("`", i + 1)
+            if j != -1:
+                out.append(("class:evo.code", text[i + 1:j]))
+                i = j + 1
+                continue
+        # Accumulate plain text until next marker.
+        j = len(text)
+        for marker in ("**", "`"):
+            k = text.find(marker, i + 1)
+            if k != -1:
+                j = min(j, k)
+        out.append(("class:evo.text", text[i:j]))
+        i = j
+    return out
 
 
 def _fmt_args(args: dict) -> str:
@@ -491,6 +580,7 @@ _STYLE = Style.from_dict({
     "evo.reasoning": "#8b93a7 italic",
     "evo.tool.name": "#7dd3fc bold",
     "evo.tool.out": "#8b93a7",
+    "evo.code": "#c4b5fd",
     "mode.default": "#7dd3fc bold",
     "mode.plan": "#fcd34d bold",
     "mode.auto": "#c4b5fd bold",

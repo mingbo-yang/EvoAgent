@@ -299,7 +299,7 @@ def test_persistent_tui_initial_welcome_visible(tmp_path, monkeypatch):
         get_model=lambda: "deepseek-chat",
     )
     lines = tui._visible_lines()
-    joined = "\n".join(line for _style, line in lines)
+    joined = "\n".join("".join(text for _style, text in line) for line in lines)
     assert "EvoAgent" in joined
     assert "autonomous coding agent" in joined
 
@@ -330,7 +330,7 @@ def test_persistent_tui_appends_assistant_chunks_incrementally(tmp_path, monkeyp
     )
     idx = tui._append_assistant_chunk(None, "hello ")
     idx = tui._append_assistant_chunk(idx, "world")
-    assert tui._lines[idx] == ("evo.text", "hello world")
+    assert "".join(text for _style, text in tui._lines[idx]) == "hello world"
 
 
 def test_persistent_tui_visible_lines_are_window_sized(tmp_path, monkeypatch):
@@ -359,8 +359,22 @@ def test_persistent_tui_visible_lines_are_window_sized(tmp_path, monkeypatch):
     for i in range(100):
         tui._append("evo.text", f"line {i}")
     visible = tui._visible_lines()
-    assert visible[-1] == ("evo.text", "line 99")
-    assert len(visible) <= 20  # default app-less fallback rows (24 - 4)
+    assert "".join(text for _style, text in visible[-1]) == "line 99"
+    assert len(visible) <= 18  # default app-less fallback rows (24 - 6)
+
+
+def test_persistent_tui_markdown_line_rendering():
+    from evoagent.cli.ui.tui import _markdown_line
+
+    heading = _markdown_line("## Result")
+    assert heading == [("class:evo.heading", "Result")]
+    bullet = _markdown_line("- use `web_tools.py` and **WebSearchTool.run**")
+    styles = [style for style, _text in bullet]
+    text = "".join(t for _s, t in bullet)
+    assert "class:evo.secondary" in styles
+    assert "class:evo.code" in styles
+    assert "class:evo.heading" in styles
+    assert "web_tools.py" in text
 
 
 def test_history_timeline_empty_and_turns():
