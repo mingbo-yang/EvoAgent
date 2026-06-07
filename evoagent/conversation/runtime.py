@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 
 from evoagent.conversation.session import ConversationSession
 from evoagent.core.message import Message, MessageRole
+from evoagent.core.react import classify_tool
 from evoagent.models.router import ModelRouter
 from evoagent.models.schema import LLMRequest
 from evoagent.sandbox.policy import PermissionPolicy
@@ -55,7 +56,8 @@ class ConversationRuntime:
                 tool_rounds += 1
                 for tc in response.tool_calls:
                     self._tool_names_this_turn.append(tc.name)
-                    decision = self.permission_policy.check("tool", tc.name, risk_level="medium")
+                    action_type, target, risk = classify_tool(tc.name, tc.arguments)
+                    decision = self.permission_policy.check(action_type, target, risk_level=risk)
                     if decision == PermissionDecision.DENY:
                         self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
                         continue
@@ -126,7 +128,8 @@ class ConversationRuntime:
                 tool_rounds += 1
                 for tc in response.tool_calls:
                     self._tool_names_this_turn.append(tc.name)
-                    decision = self.permission_policy.check("tool", tc.name, risk_level="medium")
+                    action_type, target, risk = classify_tool(tc.name, tc.arguments)
+                    decision = self.permission_policy.check(action_type, target, risk_level=risk)
                     if decision == PermissionDecision.DENY:
                         self.session.append_tool_message(tc.id, "Permission denied.", tc.name)
                         continue

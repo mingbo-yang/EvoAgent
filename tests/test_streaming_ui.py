@@ -87,3 +87,47 @@ async def test_activity_tool_names_tracked():
         assert len(runtime._tool_names_this_turn) >= 2
         assert "list_directory" in runtime._tool_names_this_turn
         assert "read_file" in runtime._tool_names_this_turn
+
+
+@pytest.mark.asyncio
+async def test_read_only_tools_do_not_request_approval():
+    """ConversationRuntime should use real action classification, not tool/medium."""
+    from evoagent.cli.ui.event_bus import EventBus
+    from evoagent.models.router import ModelRouter
+
+    class OneReadProvider:
+        provider_name = "mock"
+        calls = 0
+
+        async def chat(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                tc = ToolCall(id="tc1", name="read_file", arguments={"path": "test.txt"})
+                return LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls",
+                                   model="mock", provider="mock")
+            return LLMResponse(content="done", finish_reason="stop",
+                               model="mock", provider="mock")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "test.txt").write_text("hello")
+        tools = create_builtin_registry(ws)
+        provider = OneReadProvider()
+        router = ModelRouter(providers={"executor": provider, "default": provider})
+        session = ConversationSession(workspace=str(ws))
+        bus = EventBus()
+        approvals = []
+
+        async def on_approval(evt):
+            approvals.append(evt)
+            return "no"
+
+        bus.subscribe("approval_requested", on_approval)
+        runtime = ConversationRuntime(session, router, tools, event_bus=bus)
+        async for _ in runtime.handle_user_message_stream("read"):
+            pass
+
+        assert approvals == []
+        tool_msgs = [m for m in session.messages if m.role.value == "tool"]
+        assert tool_msgs
+        assert "hello" in tool_msgs[-1].content
