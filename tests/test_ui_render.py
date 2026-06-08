@@ -515,6 +515,78 @@ def test_persistent_tui_markdown_table_rendering():
     assert len(widths) == 1
 
 
+def test_persistent_tui_unwraps_fenced_markdown_document():
+    from evoagent.cli.ui.tui import _markdown_lines
+
+    rendered = _markdown_lines(
+        "```markdown\n"
+        "# Summary\n\n"
+        "- [x] render **Markdown**\n\n"
+        "| Item | Status |\n"
+        "| --- | --- |\n"
+        "| table | ok |\n"
+        "```"
+    )
+    plain = "\n".join("".join(text for _style, text in line) for line in rendered)
+    assert "Summary" in plain
+    assert "☑ render Markdown" in plain
+    assert "table" in plain
+    assert "| --- | --- |" not in plain
+    assert "```" not in plain
+
+
+def test_persistent_tui_renders_markdown_code_blocks():
+    from evoagent.cli.ui.tui import _markdown_lines
+
+    rendered = _markdown_lines("Before\n\n```python\nprint('hi')\n```\n\nAfter")
+    plain = "\n".join("".join(text for _style, text in line) for line in rendered)
+    assert "Before" in plain
+    assert "python" in plain
+    assert "print('hi')" in plain
+    assert "After" in plain
+    assert "```" not in plain
+
+
+def test_persistent_tui_renders_mixed_fenced_markdown_and_code():
+    from evoagent.cli.ui.tui import _markdown_lines
+
+    rendered = _markdown_lines(
+        "```markdown\n"
+        "## Result\n"
+        "| A | B |\n"
+        "| --- | --- |\n"
+        "| 1 | 2 |\n"
+        "```\n\n"
+        "```python\n"
+        "print('hi')\n"
+        "```"
+    )
+    plain = "\n".join("".join(text for _style, text in line) for line in rendered)
+    assert "Result" in plain
+    assert "│ 1" in plain and "│ 2" in plain
+    assert "python" in plain
+    assert "print('hi')" in plain
+    assert "```" not in plain
+
+
+def test_persistent_tui_renders_common_markdown_blocks():
+    from evoagent.cli.ui.tui import _markdown_lines
+
+    rendered = _markdown_lines(
+        "> note\n"
+        "1. open [docs](https://example.com)\n"
+        "   - nested `code`\n"
+        "---"
+    )
+    plain = "\n".join("".join(text for _style, text in line) for line in rendered)
+    styles = [style for line in rendered for style, _text in line]
+    assert "│ note" in plain
+    assert "1. open docs (https://example.com)" in plain
+    assert "  • nested code" in plain
+    assert "─" in plain
+    assert "class:evo.code" in styles
+
+
 def test_persistent_tui_stream_rerenders_table_block(tmp_path, monkeypatch):
     from evoagent.cli.ui.event_bus import EventBus
     from evoagent.cli.ui.tui import InteractiveTUI

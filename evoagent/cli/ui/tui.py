@@ -614,27 +614,56 @@ def _markdown_line(line: str) -> list[tuple[str, str]]:
     stripped = raw.strip()
     if not stripped:
         return [("class:evo.text", "")]
-    if stripped.startswith("```"):
+    if _is_fence(stripped):
         return [("class:evo.faint", raw)]
     if stripped.startswith("#"):
         text = stripped.lstrip("#").strip()
         return [("class:evo.heading", text)]
-    if stripped.startswith(("- ", "* ")):
-        return [("class:evo.secondary", "• "), *(_inline_md(stripped[2:]))]
-    if stripped[:3].replace(".", "").isdigit() and ". " in stripped[:5]:
-        num, rest = stripped.split(". ", 1)
-        return [("class:evo.secondary", f"{num}. "), *_inline_md(rest)]
+    if _is_horizontal_rule(stripped):
+        return [("class:evo.faint", "─" * 24)]
+    quote = _BLOCKQUOTE_RE.match(raw)
+    if quote:
+        return [("class:evo.faint", "│ "), *_inline_md(quote.group("body"))]
+    bullet = _BULLET_RE.match(raw)
+    if bullet:
+        indent = " " * (len(bullet.group("indent")) // 2 * 2)
+        marker = _checkbox_marker(bullet.group("body"))
+        body = _strip_checkbox(bullet.group("body"))
+        return [("class:evo.secondary", f"{indent}{marker} "), *_inline_md(body)]
+    ordered = _ORDERED_RE.match(raw)
+    if ordered:
+        indent = " " * (len(ordered.group("indent")) // 2 * 2)
+        return [
+            ("class:evo.secondary", f"{indent}{ordered.group('num')}. "),
+            *_inline_md(ordered.group("body")),
+        ]
     return _inline_md(raw)
 
 
 def _markdown_lines(text: str) -> list[list[tuple[str, str]]]:
     """Render Markdown text into transcript lines, including table blocks."""
-    lines = str(text).split("\n")
+    lines = _unwrap_markdown_document(str(text)).split("\n")
     rendered: list[list[tuple[str, str]]] = []
     i = 0
     while i < len(lines):
+        stripped = lines[i].strip()
+        if _is_fence(stripped):
+            lang = _fence_language(stripped)
+            code_lines: list[str] = []
+            i += 1
+            while i < len(lines) and not _is_fence(lines[i].strip()):
+                code_lines.append(lines[i])
+                i += 1
+            if i < len(lines) and _is_fence(lines[i].strip()):
+                i += 1
+            if lang in ("markdown", "md"):
+                rendered.extend(_markdown_lines("\n".join(code_lines)))
+            else:
+                rendered.extend(_render_code_block(lang, code_lines))
+            continue
         if _starts_table(lines, i):
             table_rows: list[list[str]] = [_split_table_row(lines[i]) or []]
+            alignments = _table_alignments(_split_table_row(lines[i + 1]) or [])
             i += 2  # Skip the Markdown separator row.
             while i < len(lines):
                 row = _split_table_row(lines[i])
@@ -642,11 +671,53 @@ def _markdown_lines(text: str) -> list[list[tuple[str, str]]]:
                     break
                 table_rows.append(row)
                 i += 1
-            rendered.extend(_render_markdown_table(table_rows))
+            rendered.extend(_render_markdown_table(table_rows, alignments))
             continue
         rendered.append(_markdown_line(lines[i]))
         i += 1
     return rendered
+
+
+def _unwrap_markdown_document(text: str) -> str:
+    lines = text.split("\n")
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    if start >= len(lines):
+        return text
+    first = lines[start].strip()
+    if not _is_fence(first) or _fence_language(first) not in ("markdown", "md"):
+        return text
+    end = len(lines)
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    closing = next((idx for idx in range(start + 1, end) if _is_fence(lines[idx].strip())), None)
+    if closing == end - 1:
+        return "\n".join(lines[start + 1:closing])
+    return text
+
+
+def _is_fence(stripped: str) -> bool:
+    return stripped.startswith("```") or stripped.startswith("~~~")
+
+
+def _fence_language(stripped: str) -> str:
+    parts = stripped[3:].strip().split(maxsplit=1)
+    return parts[0].lower() if parts else ""
+
+
+def _render_code_block(lang: str, lines: list[str]) -> list[list[tuple[str, str]]]:
+    label = f" {lang} " if lang else " code "
+    width = max(8, get_cwidth(label) + 4, *(get_cwidth(line) + 4 for line in lines or [""]))
+    side = max(1, width - get_cwidth(label) - 2)
+    out: list[list[tuple[str, str]]] = [
+        [("class:evo.faint", "╭" + label + ("─" * side) + "╮")]
+    ]
+    for line in lines or [""]:
+        padding = " " * max(0, width - get_cwidth(line) - 4)
+        out.append([("class:evo.faint", "│ "), ("class:evo.code", line + padding), ("class:evo.faint", " │")])
+    out.append([("class:evo.faint", "╰" + ("─" * (width - 2)) + "╯")])
+    return out
 
 
 def _starts_table(lines: list[str], index: int) -> bool:
@@ -671,11 +742,29 @@ def _split_table_row(line: str) -> list[str] | None:
     return cells if len(cells) > 1 else None
 
 
-def _render_markdown_table(rows: list[list[str]]) -> list[list[tuple[str, str]]]:
+def _table_alignments(separator: list[str]) -> list[str]:
+    alignments = []
+    for cell in separator:
+        left = cell.startswith(":")
+        right = cell.endswith(":")
+        if left and right:
+            alignments.append("center")
+        elif right:
+            alignments.append("right")
+        else:
+            alignments.append("left")
+    return alignments
+
+
+def _render_markdown_table(
+    rows: list[list[str]],
+    alignments: list[str] | None = None,
+) -> list[list[tuple[str, str]]]:
     if not rows:
         return []
     cols = max(len(row) for row in rows)
     normalized = [row + [""] * (cols - len(row)) for row in rows]
+    alignments = (alignments or []) + ["left"] * cols
     widths = [
         max(3, max(get_cwidth(_plain_cell(row[col])) for row in normalized))
         for col in range(cols)
@@ -688,7 +777,7 @@ def _render_markdown_table(rows: list[list[str]]) -> list[list[tuple[str, str]]]
         cells = []
         for col, cell in enumerate(row):
             plain = _plain_cell(cell)
-            cells.append(f" {plain}{' ' * (widths[col] - get_cwidth(plain))} ")
+            cells.append(f" {_align_cell(plain, widths[col], alignments[col])} ")
         return "│" + "│".join(cells) + "│"
 
     out: list[list[tuple[str, str]]] = [[("class:evo.faint", border("┌", "┬", "┐"))]]
@@ -701,15 +790,62 @@ def _render_markdown_table(rows: list[list[str]]) -> list[list[tuple[str, str]]]
 
 
 def _plain_cell(cell: str) -> str:
-    return re.sub(r"(\*\*|`)", "", cell.strip())
+    plain = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", cell.strip())
+    return re.sub(r"(\*\*|__|`|_)", "", plain)
+
+
+def _align_cell(text: str, width: int, alignment: str) -> str:
+    gap = max(0, width - get_cwidth(text))
+    if alignment == "right":
+        return (" " * gap) + text
+    if alignment == "center":
+        left = gap // 2
+        return (" " * left) + text + (" " * (gap - left))
+    return text + (" " * gap)
+
+
+def _is_horizontal_rule(stripped: str) -> bool:
+    compact = stripped.replace(" ", "")
+    return len(compact) >= 3 and set(compact) in ({"-"}, {"*"}, {"_"})
+
+
+def _checkbox_marker(body: str) -> str:
+    lowered = body.lower()
+    if lowered.startswith("[x] "):
+        return "☑"
+    if lowered.startswith("[ ] "):
+        return "☐"
+    return "•"
+
+
+def _strip_checkbox(body: str) -> str:
+    lowered = body.lower()
+    if lowered.startswith(("[x] ", "[ ] ")):
+        return body[4:]
+    return body
 
 
 def _inline_md(text: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     i = 0
     while i < len(text):
+        if text.startswith("[", i):
+            close_label = text.find("]", i + 1)
+            if close_label != -1 and close_label + 1 < len(text) and text[close_label + 1] == "(":
+                close_url = text.find(")", close_label + 2)
+                if close_url != -1:
+                    out.append(("class:evo.heading", text[i + 1:close_label]))
+                    out.append(("class:evo.faint", f" ({text[close_label + 2:close_url]})"))
+                    i = close_url + 1
+                    continue
         if text.startswith("**", i):
             j = text.find("**", i + 2)
+            if j != -1:
+                out.append(("class:evo.heading", text[i + 2:j]))
+                i = j + 2
+                continue
+        if text.startswith("__", i):
+            j = text.find("__", i + 2)
             if j != -1:
                 out.append(("class:evo.heading", text[i + 2:j]))
                 i = j + 2
@@ -722,7 +858,7 @@ def _inline_md(text: str) -> list[tuple[str, str]]:
                 continue
         # Accumulate plain text until next marker.
         j = len(text)
-        for marker in ("**", "`"):
+        for marker in ("[", "**", "__", "`"):
             k = text.find(marker, i + 1)
             if k != -1:
                 j = min(j, k)
@@ -732,6 +868,9 @@ def _inline_md(text: str) -> list[tuple[str, str]]:
 
 
 _TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
+_BULLET_RE = re.compile(r"^(?P<indent>\s*)[-*+]\s+(?P<body>.+)$")
+_ORDERED_RE = re.compile(r"^(?P<indent>\s*)(?P<num>\d+)[.)]\s+(?P<body>.+)$")
+_BLOCKQUOTE_RE = re.compile(r"^\s*>\s?(?P<body>.*)$")
 
 
 def _fmt_args(args: dict) -> str:
