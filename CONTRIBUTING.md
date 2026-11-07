@@ -1,5 +1,5 @@
 # Contributing to EvoAgent
-
+Wenqiang Wang contributed the majority of the code for this project.
 ## Development Setup
 
 ```bash
