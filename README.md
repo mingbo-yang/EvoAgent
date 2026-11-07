@@ -311,8 +311,9 @@ evoagent/
 
 See [ROADMAP.md](ROADMAP.md). Native Anthropic and Gemini adapters are planned; today they are reachable via any OpenAI-compatible gateway.
 
-## Contributing
 
+## Contributions
+Wenqiang Wang contributed the majority of the code for this project.
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md), run `ruff` and `pytest` before opening a pull request, and keep changes covered by tests.
 
 ## License
